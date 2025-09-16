@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YOLOv8 Object Detection Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <nav class="navbar">
+        <h1><i class="fas fa-camera"></i> YOLOv8 Object Detection Dashboard</h1>
+    </nav>
+
+    <div class="container">
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value" id="total-detections">0</div>
+                <div class="stat-label">Total Detections</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="avg-confidence">0%</div>
+                <div class="stat-label">Average Confidence</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="detection-rate">0/s</div>
+                <div class="stat-label">Detection Rate</div>
+            </div>
+        </div>
+
+        <div class="dashboard">
+            <div class="card">
+                <div class="card-header">
+                    <h2><i class="fas fa-video"></i> Live Webcam Feed</h2>
+                    <button id="toggle-camera" class="btn" style="float: right; margin-top: -30px;">
+                        <i class="fas fa-video"></i> Turn Off Camera
+                    </button>
+                </div>
+                <div id="video-container" style="position: relative;">
+                    <video id="webcam" autoplay playsinline style="width: 100%;"></video>
+                    <canvas id="canvas" style="position: absolute; left: 0; top: 0; width: 100%;"></canvas>
+                </div>
+                <div id="live-detections" class="detection-list"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2><i class="fas fa-id-card"></i> RFID Scanner</h2>
+                </div>
+                <div class="upload-form">
+                    <button id="rfid-scan" class="btn"><i class="fas fa-rss"></i> Scan Tag</button>
+                    <label>
+                        <input type="checkbox" id="rfid-auto"> Auto Scan
+                    </label>
+                    <div id="rfid-status">
+                        Connect your ACR122U and click Scan, then tap a card.
+                    </div>
+                    <div>
+                        <div id="rfid-read-output"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2><i class="fas fa-upload"></i> Image Upload</h2>
+                </div>
+                <div class="upload-form">
+                    <form id="upload-form">
+                        <input type="file" id="image-input" accept=".jpg,.jpeg,.png" required>
+                        <button type="submit" class="btn">Detect Objects</button>
+                    </form>
+                </div>
+                <div class="result-container" id="result-container" style="display: none;">
+                    <h3>Detection Results</h3>
+                    <div id="detections-list" class="detection-list"></div>
+                    <img id="result-image" class="result-image">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class WebcamManager {
+            constructor() {
+                this.video = document.getElementById('webcam');
+                this.canvas = document.getElementById('canvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.detectionsList = document.getElementById('live-detections');
+                this.toggleButton = document.getElementById('toggle-camera');
+                
+                this.isActive = false;
+                this.stream = null;
+                this.animationFrame = null;
+                this.processingFrame = false;
+
+                // Stats
+                this.totalDetections = 0;
+                this.confidenceSum = 0;
+                this.detectionCount = 0;
+                this.lastDetectionTime = Date.now();
+
+                // Bind methods
+                this.toggle = this.toggle.bind(this);
+                this.startCamera = this.startCamera.bind(this);
+                this.stopCamera = this.stopCamera.bind(this);
+                this.processFrame = this.processFrame.bind(this);
+                this.updateStats = this.updateStats.bind(this);
+
+                // Set up event listeners
+                this.toggleButton.addEventListener('click', this.toggle);
+                window.addEventListener('resize', () => this.updateCanvasSize());
+            }
+
+            async startCamera() {
+                try {
+                    this.stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            width: { ideal: 640 },
+                            height: { ideal: 480 }
+                        }
+                    });
+
+                    this.video.srcObject = this.stream;
+                    await new Promise(resolve => this.video.addEventListener('loadedmetadata', resolve, { once: true }));
+                    
+                    this.video.style.display = 'block';
+                    this.canvas.style.display = 'block';
+                    this.updateCanvasSize();
+                    
+                    this.isActive = true;
+                    this.toggleButton.innerHTML = '<i class="fas fa-video"></i> Turn Off Camera';
+                    this.processFrame();
+                } catch (error) {
+                    console.error('Error starting camera:', error);
+                    alert('Could not start camera. Please ensure you have granted camera permissions.');
+                    this.stopCamera();
+                }
+            }
+
+            stopCamera() {
+                this.isActive = false;
+                
+                if (this.animationFrame) {
+                    cancelAnimationFrame(this.animationFrame);
+                    this.animationFrame = null;
+                }
+
+                if (this.stream) {
+                    this.stream.getTracks().forEach(track => track.stop());
+                    this.stream = null;
+                }
+
+                this.video.srcObject = null;
+                this.video.style.display = 'none';
+                this.canvas.style.display = 'none';
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                this.detectionsList.innerHTML = '';
+                this.toggleButton.innerHTML = '<i class="fas fa-video-slash"></i> Turn On Camera';
+
+                // Reset stats
+                document.getElementById('detection-rate').textContent = '0/s';
+                document.getElementById('avg-confidence').textContent = '0%';
+            }
+
+            async toggle() {
+                if (this.isActive) {
+                    await this.stopCamera();
+                } else {
+                    await this.startCamera();
+                }
+            }
+
+            updateCanvasSize() {
+                if (this.video.videoWidth) {
+                    this.canvas.width = this.video.videoWidth;
+                    this.canvas.height = this.video.videoHeight;
+                    this.canvas.style.width = this.video.offsetWidth + 'px';
+                    this.canvas.style.height = this.video.offsetHeight + 'px';
+                }
+            }
+
+            updateStats(detections) {
+                if (!this.isActive) return;
+
+                // Update total detections
+                this.totalDetections += detections.length;
+                document.getElementById('total-detections').textContent = this.totalDetections;
+
+                // Update detection rate regardless of whether there are detections
+                const now = Date.now();
+                const timeDiff = now - this.lastDetectionTime;
+                const rate = timeDiff > 0 ? 1000 / timeDiff : 0;
+                document.getElementById('detection-rate').textContent = rate.toFixed(1) + '/s';
+                this.lastDetectionTime = now;
+
+                // Update confidence only when there are detections
+                if (detections.length > 0) {
+                    detections.forEach(det => {
+                        this.confidenceSum += det.confidence;
+                        this.detectionCount++;
+                    });
+
+                    const avgConfidence = (this.confidenceSum / this.detectionCount) * 100;
+                    document.getElementById('avg-confidence').textContent = avgConfidence.toFixed(1) + '%';
+                }
+            }
+
+            async processFrame() {
+                if (!this.isActive || this.processingFrame) {
+                    return;
+                }
+
+                if (this.video.readyState === this.video.HAVE_ENOUGH_DATA) {
+                    this.processingFrame = true;
+
+                    try {
+                        this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+
+                        const blob = await new Promise(resolve => {
+                            this.canvas.toBlob(resolve, 'image/jpeg', 0.8);
+                        });
+
+                        if (!this.isActive) return;
+
+                        const formData = new FormData();
+                        formData.append('file', blob, 'frame.jpg');
+
+                        const response = await fetch('/detect_frame', {
+                            method: 'POST',
+                            body: formData
+                        });
+
+                        if (!this.isActive) return;
+
+                        const data = await response.json();
+                        this.updateStats(data.detections);
+
+                        // Check if there are any high-confidence detections
+                        const highConfidenceDetections = data.detections.filter(det => det.confidence >= 0.85);
+                        
+                        if (highConfidenceDetections.length > 0) {
+                            // Save the frame with timestamp
+                            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                            const detectedClasses = highConfidenceDetections.map(det => det.class).join('_');
+                            const filename = `capture_${detectedClasses}_${timestamp}.jpg`;
+                            
+                            // Save frame
+                            const saveResponse = await fetch('/save_frame', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({
+                                    frame: this.canvas.toDataURL('image/jpeg', 0.9),
+                                    filename: filename,
+                                    detections: highConfidenceDetections
+                                })
+                            });
+
+                            if (saveResponse.ok) {
+                                console.log(`Saved frame with high-confidence detections: ${filename}`);
+                            }
+                        }
+
+                        // Update detections list
+                        let detectionsHtml = '<ul class="detection-list">';
+                        data.detections.forEach(det => {
+                            const isHighConfidence = det.confidence >= 0.85;
+                            detectionsHtml += `<li class="detection-item ${isHighConfidence ? 'high-confidence' : ''}">
+                                <i class="fas fa-box"></i> ${det.class} - ${(det.confidence * 100).toFixed(2)}%
+                                ${isHighConfidence ? ' <span class="capture-badge">Captured!</span>' : ''}
+                            </li>`;
+                        });
+                        detectionsHtml += '</ul>';
+                        this.detectionsList.innerHTML = detectionsHtml;
+
+                        // Draw detections
+                        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                        this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+
+                        data.detections.forEach(det => {
+                            const [x1, y1, x2, y2] = det.bbox;
+                            const label = `${det.class} ${(det.confidence * 100).toFixed(1)}%`;
+
+                            // Box
+                            this.ctx.strokeStyle = '#00ff00';
+                            this.ctx.lineWidth = 2;
+                            this.ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+                            // Label background
+                            this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                            this.ctx.font = '16px Arial';
+                            const labelWidth = this.ctx.measureText(label).width + 10;
+                            this.ctx.fillRect(x1, y1 - 25, labelWidth, 20);
+
+                            // Label text
+                            this.ctx.fillStyle = '#ffffff';
+                            this.ctx.fillText(label, x1 + 5, y1 - 10);
+                        });
+                    } catch (error) {
+                        console.error('Error processing frame:', error);
+                    } finally {
+                        this.processingFrame = false;
+                        if (this.isActive) {
+                            this.animationFrame = requestAnimationFrame(this.processFrame);
+                        }
+                    }
+                } else {
+                    if (this.isActive) {
+                        this.animationFrame = requestAnimationFrame(this.processFrame);
+                    }
+                }
+            }
+        }
+
+        // Image upload handling
+        document.getElementById('upload-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const fileInput = document.getElementById('image-input');
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/predict', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+                
+                if (data.error) {
+                    alert(data.error);
+                    return;
+                }
+
+                // Display results
+                const resultContainer = document.getElementById('result-container');
+                const detectionsDiv = document.getElementById('detections-list');
+                const resultImage = document.getElementById('result-image');
+
+                let detectionsHtml = '<ul class="detection-list">';
+                data.detections.forEach(det => {
+                    detectionsHtml += `<li class="detection-item">
+                        <i class="fas fa-box"></i> ${det.class} - ${(det.confidence * 100).toFixed(2)}%
+                    </li>`;
+                });
+                detectionsHtml += '</ul>';
+                detectionsDiv.innerHTML = detectionsHtml;
+
+                resultImage.src = `/static/${data.image_path}`;
+                resultContainer.style.display = 'block';
+
+            } catch (error) {
+                console.error('Error:', error);
+                alert('An error occurred while processing the image');
+            }
+        });
+
+        // Initialize webcam manager and start camera
+        const webcamManager = new WebcamManager();
+        webcamManager.startCamera();
+
+        // RFID scan handling
+        const rfidButton = document.getElementById('rfid-scan');
+        const rfidStatus = document.getElementById('rfid-status');
+        const rfidAuto = document.getElementById('rfid-auto');
+        let rfidES = null;
+        function startRfidStream() {
+            if (rfidES) return;
+            try {
+                rfidES = new EventSource('/rfid/stream');
+                rfidStatus.textContent = 'No RFID scanned';
+                rfidES.onmessage = (e) => {
+                    try {
+                        const payload = JSON.parse(e.data);
+                        if (payload.type === 'uid') {
+                            rfidStatus.textContent = `UID: ${payload.uid}`;
+                        } else if (payload.type === 'record') {
+                            // Show text record when available
+                            const out = document.getElementById('rfid-read-output');
+                            if (out) out.textContent = payload.text || '';
+                        } else if (payload.type === 'no_record') {
+                            const out = document.getElementById('rfid-read-output');
+                            if (out) out.textContent = 'No record';
+                        } else if (payload.type === 'read_error') {
+                            // Ignore low-level read errors for a cleaner UX
+                            // Keep status as last known; do not display errors here
+                        }
+                    } catch (_) {
+                        // Ignore non-JSON messages
+                    }
+                };
+                rfidES.addEventListener('hello', () => {
+                    // connection established
+                });
+                rfidES.onerror = () => {
+                    // try simple backoff by closing and letting the checkbox toggle handle restart
+                    if (rfidES) {
+                        rfidES.close();
+                        rfidES = null;
+                    }
+                    if (rfidAuto && rfidAuto.checked) {
+                        setTimeout(() => startRfidStream(), 1500);
+                    }
+                };
+            } catch (err) {
+                console.error('SSE error', err);
+            }
+        }
+        function stopRfidStream() {
+            if (rfidES) {
+                rfidES.close();
+                rfidES = null;
+            }
+        }
+        if (rfidAuto) {
+            rfidAuto.addEventListener('change', () => {
+                if (rfidAuto.checked) {
+                    startRfidStream();
+                } else {
+                    stopRfidStream();
+                    rfidStatus.textContent = 'Auto scan stopped';
+                }
+            });
+        }
+        if (rfidButton && rfidStatus) {
+            rfidButton.addEventListener('click', async () => {
+                try {
+                    rfidButton.disabled = true;
+                    rfidButton.textContent = 'Scanning...';
+                    rfidStatus.textContent = 'Hold a tag on the reader...';
+
+                    const resp = await fetch('/rfid/read_uid', { method: 'GET' });
+                    const data = await resp.json();
+                    if (data.success) {
+                        rfidStatus.innerHTML = `<span style="color: #0a8; font-weight: 600;">UID:</span> ${data.uid}`;
+                    } else {
+                        rfidStatus.innerHTML = `<span style="color: #c33;">Error:</span> ${data.error || 'Scan failed'}`;
+                    }
+                } catch (e) {
+                    rfidStatus.innerHTML = `<span style="color: #c33;">Error:</span> ${(e && e.message) || e}`;
+                } finally {
+                    rfidButton.disabled = false;
+                    rfidButton.innerHTML = '<i class="fas fa-rss"></i> Scan Tag';
+                }
+            });
+        }
+
+        // Output element for auto-read results
+        const readOutput = document.getElementById('rfid-read-output');
+    </script>
+</body>
+</html>

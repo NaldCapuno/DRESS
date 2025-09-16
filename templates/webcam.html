@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YOLOv8 Live Detection</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+        }
+        #video-container {
+            margin: 20px auto;
+            max-width: 800px;
+        }
+        #webcam, #canvas {
+            width: 100%;
+            max-width: 800px;
+            border: 2px solid #333;
+        }
+        .nav-buttons {
+            margin: 20px 0;
+        }
+        .nav-buttons a {
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            margin: 0 10px;
+        }
+        #detections {
+            margin-top: 20px;
+            text-align: left;
+            padding: 10px;
+            background-color: #f5f5f5;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="nav-buttons">
+        <a href="/">Image Upload</a>
+        <a href="/webcam">Live Webcam</a>
+    </div>
+    
+    <h1>YOLOv8 Live Detection</h1>
+    
+    <div id="video-container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="canvas" style="display: none;"></canvas>
+    </div>
+    
+    <div id="detections"></div>
+
+    <button id="capture-btn" style="margin: 20px; padding: 10px 20px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer;">Capture</button>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const detectionsDiv = document.getElementById('detections');
+        const captureBtn = document.getElementById('capture-btn');
+        let currentDetections = [];
+        
+        async function captureFrame() {
+            // Get the current frame from canvas
+            const frameDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+            
+            try {
+                const response = await fetch('/save_frame', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        frame: frameDataUrl,
+                        detections: currentDetections
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    alert('Frame captured successfully!');
+                } else {
+                    alert('Failed to capture frame.');
+                }
+            } catch (error) {
+                console.error('Error capturing frame:', error);
+                alert('Error capturing frame.');
+            }
+        }
+        
+        async function setupWebcam() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    }
+                });
+                video.srcObject = stream;
+                
+                // Set canvas size after video metadata is loaded
+                video.addEventListener('loadedmetadata', () => {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                });
+                
+                // Start detection loop
+                detectFrame();
+            } catch (error) {
+                console.error('Error accessing webcam:', error);
+                alert('Error accessing webcam. Please make sure you have a webcam connected and have granted permission to use it.');
+            }
+        }
+
+        async function detectFrame() {
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                // Draw video frame to canvas
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                // Get frame data as blob
+                canvas.toBlob(async (blob) => {
+                    // Create form data with the frame
+                    const formData = new FormData();
+                    formData.append('file', blob, 'frame.jpg');
+                    
+                    try {
+                        // Send frame to backend for detection
+                        const response = await fetch('/detect_frame', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        
+                        const data = await response.json();
+                        
+                        // Update current detections
+                        currentDetections = data.detections;
+                        
+                        // Display all detections
+                        let detectionsHtml = '<h3>Detections:</h3><ul>';
+                        data.detections.forEach(det => {
+                            detectionsHtml += `<li>Class: ${det.class} - Confidence: ${(det.confidence * 100).toFixed(2)}%</li>`;
+                        });
+                        detectionsHtml += '</ul>';
+                        detectionsDiv.innerHTML = detectionsHtml;
+                        
+                        // Draw the video frame
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                        // Show canvas and hide video
+                        video.style.display = 'none';
+                        canvas.style.display = 'block';
+                    } catch (error) {
+                        console.error('Error during detection:', error);
+                    }
+                }, 'image/jpeg', 0.8);
+            }
+            
+            // Request next frame
+            requestAnimationFrame(detectFrame);
+        }
+
+        // Add capture button event listener
+        captureBtn.addEventListener('click', captureFrame);
+
+        // Start webcam when page loads
+        setupWebcam();
+    </script>
+</body>
+</html>
