@@ -379,17 +379,18 @@
                     try {
                         const payload = JSON.parse(e.data);
                         if (payload.type === 'uid') {
-                            rfidStatus.textContent = `UID: ${payload.uid}`;
-                        } else if (payload.type === 'record') {
-                            // Show text record when available
-                            const out = document.getElementById('rfid-read-output');
-                            if (out) out.textContent = payload.text || '';
-                        } else if (payload.type === 'no_record') {
-                            const out = document.getElementById('rfid-read-output');
-                            if (out) out.textContent = 'No record';
-                        } else if (payload.type === 'read_error') {
-                            // Ignore low-level read errors for a cleaner UX
-                            // Keep status as last known; do not display errors here
+                            const m = payload.match || {};
+                            if (m.matched) {
+                                rfidStatus.textContent = `UID: ${payload.uid}`;
+                                const out = document.getElementById('rfid-read-output');
+                                if (out) out.textContent = m.name ? `Student: ${m.name} (ID: ${m.student_id})` : `student_id: ${m.student_id}`;
+                            } else {
+                                rfidStatus.textContent = `UID: ${payload.uid}`;
+                                const out = document.getElementById('rfid-read-output');
+                                if (out) out.textContent = 'No existing record';
+                            }
+                        } else if (payload.type === 'record' || payload.type === 'no_record' || payload.type === 'read_error') {
+                            // NDEF disabled: ignore these messages
                         }
                     } catch (_) {
                         // Ignore non-JSON messages
@@ -438,7 +439,16 @@
                     const resp = await fetch('/rfid/read_uid', { method: 'GET' });
                     const data = await resp.json();
                     if (data.success) {
-                        rfidStatus.innerHTML = `<span style="color: #0a8; font-weight: 600;">UID:</span> ${data.uid}`;
+                        const m = data.match || {};
+                        if (m.matched) {
+                            rfidStatus.innerHTML = `<span style="color: #0a8; font-weight: 600;">UID:</span> ${data.uid}`;
+                            const out = document.getElementById('rfid-read-output');
+                            if (out) out.textContent = m.name ? `Student: ${m.name} (ID: ${m.student_id})` : `student_id: ${m.student_id}`;
+                        } else {
+                            rfidStatus.innerHTML = `<span style="color: #c33; font-weight: 600;">UID:</span> ${data.uid}`;
+                            const out = document.getElementById('rfid-read-output');
+                            if (out) out.textContent = 'No existing record';
+                        }
                     } else {
                         rfidStatus.innerHTML = `<span style="color: #c33;">Error:</span> ${data.error || 'Scan failed'}`;
                     }

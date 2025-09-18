@@ -13,6 +13,7 @@ import logging
 import time
 import threading
 import queue
+import pymysql
 
 # ------------------ Flask App Setup ------------------
 app = Flask(__name__)
@@ -23,6 +24,84 @@ app.config['CAPTURE_FOLDER'] = 'static/captures'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['CONF_THRESHOLD'] = 0.85
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+
+# ------------------ Database Configuration ------------------
+# Override via environment variables if needed
+app.config['DB_HOST'] = os.getenv('DB_HOST', 'localhost')
+app.config['DB_PORT'] = int(os.getenv('DB_PORT', '3306'))
+app.config['DB_USER'] = os.getenv('DB_USER', 'root')
+app.config['DB_PASSWORD'] = os.getenv('DB_PASSWORD', 'root')
+app.config['DB_NAME'] = os.getenv('DB_NAME', 'dress')
+
+def _get_db_connection():
+    return pymysql.connect(
+        host=app.config['DB_HOST'],
+        port=app.config['DB_PORT'],
+        user=app.config['DB_USER'],
+        password=app.config['DB_PASSWORD'],
+        database=app.config['DB_NAME'],
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=True
+    )
+
+def _find_student_by_rfid(rfid_uid: str):
+    if not rfid_uid:
+        return None
+    try:
+        conn = _get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT student_id, rfid_uid, name, year_level, course, college, photo
+                    FROM students
+                    WHERE rfid_uid = %s
+                    LIMIT 1
+                    """,
+                    (rfid_uid,)
+                )
+                row = cur.fetchone()
+                return row
+        finally:
+            conn.close()
+    except Exception as e:
+        app.logger.error(f"DB lookup error: {e}")
+        return None
+
+def _insert_rfid_log(rfid_uid: str, student_id: int | None, status: str):
+    try:
+        conn = _get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO rfid_logs (student_id, rfid_uid, status)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (student_id, rfid_uid, status)
+                )
+        finally:
+            conn.close()
+    except Exception as e:
+        app.logger.error(f"DB log insert error: {e}")
+
+def _lookup_and_log(rfid_uid: str):
+    student = _find_student_by_rfid(rfid_uid)
+    if student:
+        _insert_rfid_log(rfid_uid, student.get('student_id'), 'valid')
+        return {
+            'matched': True,
+            'student_id': student.get('student_id'),
+            'name': student.get('name'),
+            'rfid_uid': student.get('rfid_uid'),
+            'year_level': student.get('year_level'),
+            'course': student.get('course'),
+            'college': student.get('college'),
+            'photo': student.get('photo'),
+        }
+    else:
+        _insert_rfid_log(rfid_uid, None, 'unregistered')
+        return {'matched': False}
 
 # Ensure required folders exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -194,20 +273,8 @@ def _rfid_poll_loop():
                 _rfid_last_uid = uid
                 _rfid_last_time = now
                 _rfid_set_present(True)
-                _publish_event({'type': 'uid', 'uid': uid})
-                # Try to read NDEF Text record with default key (best-effort)
-                try:
-                    ndef_area = _read_entire_ndef_area_default_key()
-                    if ndef_area:
-                        text = _parse_ndef_text_from_tlv(ndef_area)
-                        if text:
-                            _publish_event({'type': 'record', 'uid': uid, 'text': text})
-                        else:
-                            _publish_event({'type': 'no_record', 'uid': uid})
-                    else:
-                        _publish_event({'type': 'read_error', 'uid': uid, 'error': 'Unable to read data area'})
-                except Exception as e:
-                    _publish_event({'type': 'read_error', 'uid': uid, 'error': str(e)})
+                match_info = _lookup_and_log(uid)
+                _publish_event({'type': 'uid', 'uid': uid, 'match': match_info})
         else:
             # No UID read within this poll; mark not present
             _rfid_set_present(False)
@@ -232,11 +299,26 @@ def rfid_read_uid():
         uid, err = get_rfid_uid()
         if uid:
             _rfid_set_present(True)
-            return jsonify({'success': True, 'uid': uid})
+            match_info = _lookup_and_log(uid)
+            return jsonify({'success': True, 'uid': uid, 'match': match_info})
         _rfid_set_present(False)
         return jsonify({'success': False, 'error': err or 'Unknown error'}), 500
     except Exception as e:
         app.logger.error(f"RFID endpoint error: {e}")
+        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+
+@app.route('/rfid/lookup', methods=['GET'])
+def rfid_lookup():
+    try:
+        uid = request.args.get('uid')
+        if not uid:
+            return jsonify({'success': False, 'error': 'uid query param is required'}), 400
+        student = _find_student_by_rfid(uid)
+        if student:
+            return jsonify({'success': True, 'uid': uid, 'student': student})
+        return jsonify({'success': True, 'uid': uid, 'student': None})
+    except Exception as e:
+        app.logger.error(f"RFID lookup error: {e}")
         return jsonify({'success': False, 'error': 'Internal server error'}), 500
 
 @app.route('/rfid/stream')
@@ -354,17 +436,7 @@ def _parse_ndef_text_from_tlv(tlv_bytes: bytes):
 
 @app.route('/rfid/read_record', methods=['GET'])
 def rfid_read_record():
-    try:
-        ndef_area = _read_entire_ndef_area_default_key()
-        if not ndef_area:
-            return jsonify({'success': False, 'error': 'Could not read data. Check key or access.'}), 400
-        text = _parse_ndef_text_from_tlv(ndef_area)
-        if text is None:
-            return jsonify({'success': False, 'error': 'No NDEF Text record found.'}), 404
-        return jsonify({'success': True, 'text': text})
-    except Exception as e:
-        app.logger.error(f"RFID read_record error: {e}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+    return jsonify({'success': False, 'error': 'NDEF reading disabled'}), 410
 
 @app.route('/rfid/read_block', methods=['POST'])
 def rfid_read_block():
