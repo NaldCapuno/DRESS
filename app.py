@@ -163,6 +163,17 @@ _rfid_subscribers = set()
 _rfid_subscribers_lock = threading.Lock()
 _rfid_last_uid = None
 _rfid_last_time = 0.0
+_rfid_presence_lock = threading.Lock()
+_rfid_present = False
+
+def _rfid_set_present(present: bool):
+    global _rfid_present
+    with _rfid_presence_lock:
+        _rfid_present = bool(present)
+
+def _rfid_is_present():
+    with _rfid_presence_lock:
+        return _rfid_present
 
 def _publish_event(payload):
     with _rfid_subscribers_lock:
@@ -182,6 +193,7 @@ def _rfid_poll_loop():
             if uid != _rfid_last_uid or (now - _rfid_last_time) > debounce_seconds:
                 _rfid_last_uid = uid
                 _rfid_last_time = now
+                _rfid_set_present(True)
                 _publish_event({'type': 'uid', 'uid': uid})
                 # Try to read NDEF Text record with default key (best-effort)
                 try:
@@ -196,6 +208,9 @@ def _rfid_poll_loop():
                         _publish_event({'type': 'read_error', 'uid': uid, 'error': 'Unable to read data area'})
                 except Exception as e:
                     _publish_event({'type': 'read_error', 'uid': uid, 'error': str(e)})
+        else:
+            # No UID read within this poll; mark not present
+            _rfid_set_present(False)
         time.sleep(0.2)
 
 def _ensure_rfid_thread_running():
@@ -213,9 +228,12 @@ def home():
 @app.route('/rfid/read_uid', methods=['GET'])
 def rfid_read_uid():
     try:
+        _ensure_rfid_thread_running()
         uid, err = get_rfid_uid()
         if uid:
+            _rfid_set_present(True)
             return jsonify({'success': True, 'uid': uid})
+        _rfid_set_present(False)
         return jsonify({'success': False, 'error': err or 'Unknown error'}), 500
     except Exception as e:
         app.logger.error(f"RFID endpoint error: {e}")
@@ -438,6 +456,11 @@ def save_frame():
 @app.route('/detect_frame', methods=['POST'])
 def detect_frame():
     try:
+        # Gate webcam detection strictly on live RFID presence
+        _ensure_rfid_thread_running()
+        if not _rfid_is_present():
+            return jsonify({'error': 'RFID card must be present to detect'}), 403
+
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
 
