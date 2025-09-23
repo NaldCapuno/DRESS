@@ -136,16 +136,23 @@ DROP TABLE IF EXISTS `violations`;
 CREATE TABLE `violations` (
   `violation_id` int NOT NULL AUTO_INCREMENT,
   `student_id` varchar(20) DEFAULT NULL,
+  `missing_item` varchar(100) NOT NULL,
+  `detected_items` text DEFAULT NULL,
+  `gender` enum('Male','Female') DEFAULT NULL,
+  `location` varchar(100) DEFAULT 'Web Detection',
+  `status` enum('Pending','Resolved','Dismissed') DEFAULT 'Pending',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   `recorded_by` int DEFAULT NULL,
-  `violation_type` varchar(100) DEFAULT NULL,
-  `timestamp` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `image_proof` varchar(255) DEFAULT NULL,
-  `status` enum('pending','forwarded','resolved') DEFAULT 'pending',
+  `notes` text DEFAULT NULL,
   PRIMARY KEY (`violation_id`),
-  KEY `student_id` (`student_id`),
+  KEY `idx_student_id` (`student_id`),
+  KEY `idx_status` (`status`),
+  KEY `idx_created_at` (`created_at`),
   KEY `fk_violations_admin` (`recorded_by`),
-  CONSTRAINT `fk_violations_admin` FOREIGN KEY (`recorded_by`) REFERENCES `admins` (`admin_id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `violations_ibfk_1` FOREIGN KEY (`student_id`) REFERENCES `students` (`student_id`) ON DELETE CASCADE
+  CONSTRAINT `fk_violations_student` FOREIGN KEY (`student_id`) REFERENCES `students` (`student_id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_violations_admin` FOREIGN KEY (`recorded_by`) REFERENCES `admins` (`admin_id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -157,6 +164,69 @@ LOCK TABLES `violations` WRITE;
 /*!40000 ALTER TABLE `violations` DISABLE KEYS */;
 /*!40000 ALTER TABLE `violations` ENABLE KEYS */;
 UNLOCK TABLES;
+
+--
+-- Additional indexes for violations table
+--
+
+CREATE INDEX `idx_violations_composite` ON `violations` (`student_id`, `status`, `created_at`);
+
+--
+-- View for violation summary
+--
+
+CREATE VIEW `violation_summary` AS
+SELECT 
+    v.violation_id,
+    v.student_id,
+    s.name as student_name,
+    s.rfid_uid,
+    s.course,
+    s.college,
+    v.missing_item,
+    v.detected_items,
+    v.gender,
+    v.location,
+    v.status,
+    v.created_at,
+    v.updated_at
+FROM violations v
+LEFT JOIN students s ON v.student_id = s.student_id
+ORDER BY v.created_at DESC;
+
+--
+-- Stored procedure for violation statistics
+--
+
+DELIMITER //
+CREATE PROCEDURE GetViolationStats(IN days_back INT)
+BEGIN
+    SELECT 
+        COUNT(*) as total_violations,
+        COUNT(CASE WHEN status = 'Pending' THEN 1 END) as pending_violations,
+        COUNT(CASE WHEN status = 'Resolved' THEN 1 END) as resolved_violations,
+        COUNT(CASE WHEN status = 'Dismissed' THEN 1 END) as dismissed_violations,
+        COUNT(DISTINCT student_id) as unique_students,
+        COUNT(CASE WHEN gender = 'Male' THEN 1 END) as male_violations,
+        COUNT(CASE WHEN gender = 'Female' THEN 1 END) as female_violations
+    FROM violations 
+    WHERE created_at >= DATE_SUB(NOW(), INTERVAL days_back DAY);
+END //
+DELIMITER ;
+
+--
+-- Trigger for automatic timestamp updates
+--
+
+DELIMITER //
+CREATE TRIGGER update_violations_timestamp 
+BEFORE UPDATE ON violations
+FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = CURRENT_TIMESTAMP;
+END //
+DELIMITER ;
+
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;

@@ -14,6 +14,15 @@ import time
 import threading
 import queue
 import pymysql
+import requests
+import json
+from typing import List, Dict, Optional
+from config import (
+    CLASS_NAMES, DRESS_CODE_REQUIREMENTS, DISPLAY_NAMES,
+    WEBHOOK_URL, WEBHOOK_TIMEOUT, WEBHOOK_RETRY_ATTEMPTS,
+    REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_QUEUE_NAME,
+    VIOLATION_THROTTLE_SECONDS
+)
 
 # ------------------ Flask App Setup ------------------
 app = Flask(__name__)
@@ -31,7 +40,7 @@ app.config['DB_HOST'] = os.getenv('DB_HOST', 'localhost')
 app.config['DB_PORT'] = int(os.getenv('DB_PORT', '3306'))
 app.config['DB_USER'] = os.getenv('DB_USER', 'root')
 app.config['DB_PASSWORD'] = os.getenv('DB_PASSWORD', 'root')
-app.config['DB_NAME'] = os.getenv('DB_NAME', 'dress')
+app.config['DB_NAME'] = os.getenv('DB_NAME', 'dressv2')
 
 def _get_db_connection():
     return pymysql.connect(
@@ -112,8 +121,175 @@ logging.basicConfig(level=logging.INFO)
 app.logger.setLevel(logging.INFO)
 
 # ------------------ Load YOLO Model ------------------
+import torch
+# Fix for PyTorch 2.6+ security requirements
+torch.serialization.add_safe_globals(['ultralytics.nn.tasks.DetectionModel'])
 model = YOLO('best.pt')
 model.fuse()
+
+# ------------------ Violation Detection Functions ------------------
+def detect_gender_from_items(detected_items: List[str]) -> str:
+    """Detect gender based on detected clothing items"""
+    female_items = {'blouse', 'skirt', 'doll_shoes'}
+    male_items = {'polo_shirt', 'pants', 'shoes'}
+    
+    female_score = len(set(detected_items) & female_items)
+    male_score = len(set(detected_items) & male_items)
+    
+    if female_score > male_score:
+        return 'Female'
+    elif male_score > female_score:
+        return 'Male'
+    else:
+        # Default to Male if unclear
+        return 'Male'
+
+def check_dress_code_compliance(detected_items: List[str], gender: str) -> Dict:
+    """Check dress code compliance based on detected items and gender"""
+    required_items = DRESS_CODE_REQUIREMENTS[gender].copy()
+    detected_set = set(detected_items)
+    
+    # For female students, accept either 'shoes' or 'doll_shoes' as valid footwear
+    if gender == 'Female':
+        if 'doll_shoes' in detected_set:
+            detected_set.add('shoes')  # Treat doll_shoes as shoes for compliance check
+    
+    missing_items = []
+    for item in required_items:
+        if item not in detected_set:
+            missing_items.append(DISPLAY_NAMES[item])
+    
+    is_compliant = len(missing_items) == 0
+    
+    return {
+        'is_compliant': is_compliant,
+        'missing_items': missing_items,
+        'detected_items': [DISPLAY_NAMES.get(item, item) for item in detected_items],
+        'gender': gender
+    }
+
+def log_violation_to_db(student_id: Optional[int], missing_items: List[str], location: str = "Web Detection"):
+    """Log violation to database"""
+    if not missing_items:
+        return
+    
+    try:
+        conn = _get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                for item in missing_items:
+                    cur.execute(
+                        """
+                        INSERT INTO violations (student_id, missing_item, location, status, created_at)
+                        VALUES (%s, %s, %s, 'Pending', NOW())
+                        """,
+                        (student_id, item, location)
+                    )
+            conn.commit()
+            app.logger.info(f"Violation logged: Student {student_id}, Missing: {', '.join(missing_items)}")
+        finally:
+            conn.close()
+    except Exception as e:
+        app.logger.error(f"Error logging violation to database: {e}")
+
+def send_violation_webhook(violation_data: dict):
+    """Send violation data to external system via webhook"""
+    if not WEBHOOK_URL:
+        app.logger.warning("Webhook URL not configured, skipping webhook notification")
+        return
+    
+    payload = {
+        'student_id': violation_data.get('student_id'),
+        'missing_items': violation_data.get('missing_items'),
+        'detected_items': violation_data.get('detected_items'),
+        'gender': violation_data.get('gender'),
+        'location': violation_data.get('location'),
+        'timestamp': datetime.now().isoformat(),
+        'violation_type': 'dress_code'
+    }
+    
+    for attempt in range(WEBHOOK_RETRY_ATTEMPTS):
+        try:
+            response = requests.post(
+                WEBHOOK_URL, 
+                json=payload, 
+                timeout=WEBHOOK_TIMEOUT,
+                headers={'Content-Type': 'application/json'}
+            )
+            if response.status_code == 200:
+                app.logger.info(f"Violation sent to webhook successfully: {payload}")
+                return
+            else:
+                app.logger.warning(f"Webhook returned status {response.status_code}: {response.text}")
+        except Exception as e:
+            app.logger.error(f"Webhook attempt {attempt + 1} failed: {e}")
+            if attempt < WEBHOOK_RETRY_ATTEMPTS - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff
+    
+    app.logger.error(f"All webhook attempts failed for violation: {payload}")
+
+def publish_violation_to_queue(violation_data: dict):
+    """Publish violation to message queue (Redis)"""
+    try:
+        import redis
+        r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+        
+        message = {
+            'type': 'dress_code_violation',
+            'data': violation_data,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        r.lpush(REDIS_QUEUE_NAME, json.dumps(message))
+        app.logger.info(f"Violation published to queue: {message}")
+    except ImportError:
+        app.logger.warning("Redis not available, skipping queue notification")
+    except Exception as e:
+        app.logger.error(f"Error publishing to queue: {e}")
+
+def process_violation(student_id: Optional[int], missing_items: List[str], detected_items: List[str], 
+                     gender: str, location: str = "Web Detection"):
+    """Process violation by logging to DB and notifying external systems"""
+    if not missing_items:
+        return
+    
+    violation_data = {
+        'student_id': student_id,
+        'missing_items': missing_items,
+        'detected_items': detected_items,
+        'gender': gender,
+        'location': location
+    }
+    
+    # Log to database
+    log_violation_to_db(student_id, missing_items, location)
+    
+    # Send to external systems
+    send_violation_webhook(violation_data)
+    publish_violation_to_queue(violation_data)
+
+# Violation throttling to prevent spam
+_violation_cache = {}
+_violation_cache_lock = threading.Lock()
+
+def should_throttle_violation(student_id: Optional[int], missing_items: List[str]) -> bool:
+    """Check if violation should be throttled to prevent spam"""
+    with _violation_cache_lock:
+        cache_key = f"{student_id}_{hash(tuple(sorted(missing_items)))}"
+        current_time = time.time()
+        
+        if cache_key in _violation_cache:
+            last_time = _violation_cache[cache_key]
+            if current_time - last_time < VIOLATION_THROTTLE_SECONDS:
+                return True
+        
+        _violation_cache[cache_key] = current_time
+        
+        # Clean old entries (older than 1 hour)
+        cutoff_time = current_time - 3600
+        _violation_cache = {k: v for k, v in _violation_cache.items() if v > cutoff_time}
+        
+        return False
 
 # ------------------ Helper Functions ------------------
 def allowed_file(filename):
@@ -544,6 +720,7 @@ def detect_frame():
         results = model(img)
         result = results[0]
         detections = []
+        detected_items = []
 
         conf_threshold = app.config['CONF_THRESHOLD']
         for box in result.boxes:
@@ -552,6 +729,7 @@ def detect_frame():
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 class_id = int(box.cls[0])
                 class_name = result.names[class_id]
+                detected_items.append(class_name)
 
                 detections.append({
                     'bbox': [x1, y1, x2, y2],
@@ -559,7 +737,33 @@ def detect_frame():
                     'class': class_name
                 })
 
-        return jsonify({'detections': detections})
+        # Check for dress code violations
+        gender = detect_gender_from_items(detected_items)
+        compliance_result = check_dress_code_compliance(detected_items, gender)
+        
+        # Get current RFID student info for violation logging
+        current_student = None
+        if _rfid_last_uid:
+            student_info = _find_student_by_rfid(_rfid_last_uid)
+            if student_info:
+                current_student = student_info.get('student_id')
+        
+        # Process violation if not compliant and not throttled
+        if not compliance_result['is_compliant']:
+            if not should_throttle_violation(current_student, compliance_result['missing_items']):
+                process_violation(
+                    current_student, 
+                    compliance_result['missing_items'], 
+                    detected_items, 
+                    gender, 
+                    "Live Camera"
+                )
+
+        return jsonify({
+            'detections': detections,
+            'compliance': compliance_result,
+            'violation_detected': not compliance_result['is_compliant']
+        })
     except Exception as e:
         app.logger.error(f"Error during frame detection: {e}")
         return jsonify({'error': 'Internal server error during detection'}), 500
@@ -587,17 +791,42 @@ def predict():
             result.boxes = result.boxes[result.boxes.conf >= conf_threshold]
 
             detections = []
+            detected_items = []
             for box in result.boxes:
                 conf = float(box.conf[0])
                 x1, y1, x2, y2 = map(float, box.xyxy[0].tolist())
                 class_id = int(box.cls[0])
                 class_name = result.names[class_id]
+                detected_items.append(class_name)
 
                 detections.append({
                     'bbox': [x1, y1, x2, y2],
                     'confidence': conf,
                     'class': class_name
                 })
+
+            # Check for dress code violations
+            gender = detect_gender_from_items(detected_items)
+            compliance_result = check_dress_code_compliance(detected_items, gender)
+            
+            # Get student ID from request if provided
+            student_id = request.form.get('student_id')
+            if student_id:
+                try:
+                    student_id = int(student_id)
+                except ValueError:
+                    student_id = None
+            
+            # Process violation if not compliant and not throttled
+            if not compliance_result['is_compliant']:
+                if not should_throttle_violation(student_id, compliance_result['missing_items']):
+                    process_violation(
+                        student_id, 
+                        compliance_result['missing_items'], 
+                        detected_items, 
+                        gender, 
+                        "File Upload"
+                    )
 
             annotated_img = result.plot()
             output_filename = f'result_{filename}'
@@ -607,12 +836,209 @@ def predict():
             file_url = url_for('static', filename=output_filename, _external=True)
             app.logger.info(f"Prediction completed for {filename} with {len(detections)} detections.")
 
-            return jsonify({'detections': detections, 'image_path': file_url})
+            return jsonify({
+                'detections': detections, 
+                'image_path': file_url,
+                'compliance': compliance_result,
+                'violation_detected': not compliance_result['is_compliant']
+            })
 
         return jsonify({'error': 'Invalid file type'}), 400
     except Exception as e:
         app.logger.error(f"Prediction error: {e}")
         return jsonify({'error': 'Internal server error during prediction'}), 500
+
+# ------------------ External System Integration API ------------------
+@app.route('/api/violation-check', methods=['POST'])
+def api_violation_check():
+    """API endpoint for external systems to check violations"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        detected_classes = data.get('detected_classes', [])
+        student_id = data.get('student_id')
+        location = data.get('location', 'API')
+        
+        if not detected_classes:
+            return jsonify({'error': 'detected_classes is required'}), 400
+        
+        # Detect gender from classes
+        gender = detect_gender_from_items(detected_classes)
+        
+        # Check compliance
+        compliance_result = check_dress_code_compliance(detected_classes, gender)
+        
+        # Process violation if not compliant and not throttled
+        if not compliance_result['is_compliant']:
+            if not should_throttle_violation(student_id, compliance_result['missing_items']):
+                process_violation(
+                    student_id, 
+                    compliance_result['missing_items'], 
+                    detected_classes, 
+                    gender, 
+                    location
+                )
+        
+        # Return violation data for external system
+        return jsonify({
+            'success': True,
+            'has_violation': not compliance_result['is_compliant'],
+            'violation_details': {
+                'missing_items': compliance_result['missing_items'],
+                'detected_items': compliance_result['detected_items'],
+                'gender': gender,
+                'student_id': student_id,
+                'location': location
+            },
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        app.logger.error(f"API violation check error: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/violations', methods=['GET'])
+def api_get_violations():
+    """Get violations for external systems"""
+    try:
+        # Query parameters
+        student_id = request.args.get('student_id', type=int)
+        status = request.args.get('status', 'Pending')
+        limit = request.args.get('limit', 50, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        
+        conn = _get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                query = """
+                SELECT v.*, s.name as student_name, s.rfid_uid
+                FROM violations v
+                LEFT JOIN students s ON v.student_id = s.student_id
+                WHERE 1=1
+                """
+                params = []
+                
+                if student_id:
+                    query += " AND v.student_id = %s"
+                    params.append(student_id)
+                
+                if status:
+                    query += " AND v.status = %s"
+                    params.append(status)
+                
+                query += " ORDER BY v.created_at DESC LIMIT %s OFFSET %s"
+                params.extend([limit, offset])
+                
+                cur.execute(query, params)
+                violations = cur.fetchall()
+                
+                # Get total count
+                count_query = """
+                SELECT COUNT(*) as total
+                FROM violations v
+                WHERE 1=1
+                """
+                count_params = []
+                
+                if student_id:
+                    count_query += " AND v.student_id = %s"
+                    count_params.append(student_id)
+                
+                if status:
+                    count_query += " AND v.status = %s"
+                    count_params.append(status)
+                
+                cur.execute(count_query, count_params)
+                total = cur.fetchone()['total']
+                
+                return jsonify({
+                    'success': True,
+                    'violations': violations,
+                    'total': total,
+                    'limit': limit,
+                    'offset': offset
+                })
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        app.logger.error(f"API get violations error: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/violations/<int:violation_id>/status', methods=['PUT'])
+def api_update_violation_status():
+    """Update violation status for external systems"""
+    try:
+        violation_id = request.view_args['violation_id']
+        data = request.get_json()
+        
+        if not data or 'status' not in data:
+            return jsonify({'error': 'status is required'}), 400
+        
+        new_status = data['status']
+        valid_statuses = ['Pending', 'Resolved', 'Dismissed']
+        
+        if new_status not in valid_statuses:
+            return jsonify({'error': f'Invalid status. Must be one of: {valid_statuses}'}), 400
+        
+        conn = _get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE violations 
+                    SET status = %s, updated_at = NOW()
+                    WHERE violation_id = %s
+                    """,
+                    (new_status, violation_id)
+                )
+                
+                if cur.rowcount == 0:
+                    return jsonify({'error': 'Violation not found'}), 404
+                
+                conn.commit()
+                
+                return jsonify({
+                    'success': True,
+                    'message': f'Violation {violation_id} status updated to {new_status}'
+                })
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        app.logger.error(f"API update violation status error: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/health', methods=['GET'])
+def api_health():
+    """Health check endpoint for external systems"""
+    try:
+        # Check database connection
+        db_status = "healthy"
+        try:
+            conn = _get_db_connection()
+            conn.close()
+        except Exception as e:
+            db_status = f"unhealthy: {str(e)}"
+        
+        # Check model
+        model_status = "loaded" if model else "not loaded"
+        
+        return jsonify({
+            'status': 'healthy',
+            'database': db_status,
+            'model': model_status,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
