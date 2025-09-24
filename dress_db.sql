@@ -107,6 +107,7 @@ CREATE TABLE `students` (
   `student_id` varchar(20) NOT NULL,
   `rfid_uid` varchar(50) NOT NULL,
   `name` varchar(100) NOT NULL,
+  `gender` enum('male','female') DEFAULT NULL,
   `year_level` int DEFAULT NULL,
   `course` varchar(50) DEFAULT NULL,
   `college` varchar(45) DEFAULT NULL,

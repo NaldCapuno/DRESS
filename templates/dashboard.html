@@ -49,11 +49,8 @@
                 </div>
                 <div class="upload-form">
                     <button id="rfid-scan" class="btn"><i class="fas fa-rss"></i> Scan Tag</button>
-                    <label>
-                        <input type="checkbox" id="rfid-auto"> Auto Scan
-                    </label>
                     <div id="rfid-status">
-                        Connect your ACR122U and click Scan, then tap a card.
+                        RFID auto-scanning is active. Tap a card to scan.
                     </div>
                     <div>
                         <div id="rfid-read-output"></div>
@@ -138,7 +135,7 @@
                 }
             }
 
-            stopCamera() {
+            async stopCamera() {
                 this.isActive = false;
                 
                 if (this.animationFrame) {
@@ -236,13 +233,15 @@
                         const data = await response.json();
                         this.updateStats(data.detections);
 
-                        // Check if there are any high-confidence detections
+                        // Check if there are any high-confidence detections OR actual violations
                         const highConfidenceDetections = data.detections.filter(det => det.confidence >= 0.85);
+                        const hasViolations = data.uniform && data.uniform.gender && data.uniform.missing && data.uniform.missing.length > 0;
                         
-                        if (highConfidenceDetections.length > 0) {
+                        if (highConfidenceDetections.length > 0 || hasViolations) {
                             // Save the frame with timestamp
                             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                            const detectedClasses = highConfidenceDetections.map(det => det.class).join('_');
+                            const detectedClasses = highConfidenceDetections.length > 0 ? 
+                                highConfidenceDetections.map(det => det.class).join('_') : 'violation';
                             const filename = `capture_${detectedClasses}_${timestamp}.jpg`;
                             
                             // Save frame
@@ -259,7 +258,11 @@
                             });
 
                             if (saveResponse.ok) {
-                                console.log(`Saved frame with high-confidence detections: ${filename}`);
+                                const saveData = await saveResponse.json();
+                                if (saveData.violation && saveData.violation.created) {
+                                    console.log(`VIOLATION CREATED: ${saveData.violation.violation_id}`);
+                                }
+                                console.log(`Saved frame: ${filename}`);
                             }
                         }
 
@@ -368,17 +371,40 @@
         // RFID scan handling
         const rfidButton = document.getElementById('rfid-scan');
         const rfidStatus = document.getElementById('rfid-status');
-        const rfidAuto = document.getElementById('rfid-auto');
         let rfidES = null;
+        let lastCardTime = 0;
+        let cardCheckInterval = null;
+        
         function startRfidStream() {
             if (rfidES) return;
             try {
                 rfidES = new EventSource('/rfid/stream');
                 rfidStatus.textContent = 'No RFID scanned';
+                
+                // Reset sessions when RFID card is removed (no more events)
+                const resetTimeout = 3000; // Reset after 3 seconds of no card
+                
+                const checkCardRemoval = () => {
+                    if (Date.now() - lastCardTime > resetTimeout && lastCardTime > 0) {
+                        // Card has been removed, reset sessions
+                        fetch('/reset_sessions', { method: 'POST' })
+                            .then(() => console.log('Sessions reset - RFID card removed'))
+                            .catch(error => console.error('Failed to reset sessions:', error));
+                        lastCardTime = 0; // Prevent multiple resets
+                    }
+                };
+                
+                // Start checking for card removal every second
+                if (cardCheckInterval) clearInterval(cardCheckInterval);
+                cardCheckInterval = setInterval(checkCardRemoval, 1000);
+                
                 rfidES.onmessage = (e) => {
                     try {
                         const payload = JSON.parse(e.data);
                         if (payload.type === 'uid') {
+                            // Update last card time on any RFID event
+                            lastCardTime = Date.now();
+                            
                             const m = payload.match || {};
                             if (m.matched) {
                                 rfidStatus.textContent = `UID: ${payload.uid}`;
@@ -400,14 +426,16 @@
                     // connection established
                 });
                 rfidES.onerror = () => {
-                    // try simple backoff by closing and letting the checkbox toggle handle restart
+                    // try simple backoff by closing and automatically restarting
                     if (rfidES) {
                         rfidES.close();
                         rfidES = null;
                     }
-                    if (rfidAuto && rfidAuto.checked) {
-                        setTimeout(() => startRfidStream(), 1500);
+                    if (cardCheckInterval) {
+                        clearInterval(cardCheckInterval);
+                        cardCheckInterval = null;
                     }
+                    setTimeout(() => startRfidStream(), 1500);
                 };
             } catch (err) {
                 console.error('SSE error', err);
@@ -418,17 +446,13 @@
                 rfidES.close();
                 rfidES = null;
             }
+            if (cardCheckInterval) {
+                clearInterval(cardCheckInterval);
+                cardCheckInterval = null;
+            }
         }
-        if (rfidAuto) {
-            rfidAuto.addEventListener('change', () => {
-                if (rfidAuto.checked) {
-                    startRfidStream();
-                } else {
-                    stopRfidStream();
-                    rfidStatus.textContent = 'Auto scan stopped';
-                }
-            });
-        }
+        // Auto-start RFID scanning
+        startRfidStream();
         if (rfidButton && rfidStatus) {
             rfidButton.addEventListener('click', async () => {
                 try {
