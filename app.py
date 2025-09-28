@@ -13,7 +13,7 @@ import logging
 import time
 import threading
 import queue
-import pymysql
+from database import db_manager
 
 # ------------------ Flask App Setup ------------------
 app = Flask(__name__)
@@ -125,104 +125,6 @@ def _delete_first_captured_images():
     except Exception as e:
         app.logger.error(f"Error deleting captured images: {e}")
 
-# ------------------ Database Configuration ------------------
-# Override via environment variables if needed
-app.config['DB_HOST'] = os.getenv('DB_HOST', 'localhost')
-app.config['DB_PORT'] = int(os.getenv('DB_PORT', '3306'))
-app.config['DB_USER'] = os.getenv('DB_USER', 'root')
-app.config['DB_PASSWORD'] = os.getenv('DB_PASSWORD', 'root')
-app.config['DB_NAME'] = os.getenv('DB_NAME', 'dress')
-
-def _get_db_connection():
-    return pymysql.connect(
-        host=app.config['DB_HOST'],
-        port=app.config['DB_PORT'],
-        user=app.config['DB_USER'],
-        password=app.config['DB_PASSWORD'],
-        database=app.config['DB_NAME'],
-        cursorclass=pymysql.cursors.DictCursor,
-        autocommit=True
-    )
-
-def _find_student_by_rfid(rfid_uid: str):
-    if not rfid_uid:
-        return None
-    try:
-        conn = _get_db_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT student_id, rfid_uid, name, gender, year_level, course, college, photo
-                    FROM students
-                    WHERE rfid_uid = %s
-                    LIMIT 1
-                    """,
-                    (rfid_uid,)
-                )
-                row = cur.fetchone()
-                return row
-        finally:
-            conn.close()
-    except Exception as e:
-        app.logger.error(f"DB lookup error: {e}")
-        return None
-
-def _insert_rfid_log(rfid_uid: str, student_id: int | None, status: str):
-    try:
-        conn = _get_db_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO rfid_logs (student_id, rfid_uid, status)
-                    VALUES (%s, %s, %s)
-                    """,
-                    (student_id, rfid_uid, status)
-                )
-        finally:
-            conn.close()
-    except Exception as e:
-        app.logger.error(f"DB log insert error: {e}")
-
-def _lookup_and_log(rfid_uid: str):
-    student = _find_student_by_rfid(rfid_uid)
-    if student:
-        _insert_rfid_log(rfid_uid, student.get('student_id'), 'valid')
-        return {
-            'matched': True,
-            'student_id': student.get('student_id'),
-            'name': student.get('name'),
-            'rfid_uid': student.get('rfid_uid'),
-            'gender': student.get('gender'),
-            'year_level': student.get('year_level'),
-            'course': student.get('course'),
-            'college': student.get('college'),
-            'photo': student.get('photo'),
-        }
-    else:
-        _insert_rfid_log(rfid_uid, None, 'unregistered')
-        return {'matched': False}
-
-
-def _insert_violation(student_id: str | None, violation_type: str, image_proof_rel_path: str | None, recorded_by: int | None = None) -> int | None:
-    try:
-        conn = _get_db_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO violations (student_id, recorded_by, violation_type, image_proof)
-                    VALUES (%s, %s, %s, %s)
-                    """,
-                    (student_id, recorded_by, violation_type, image_proof_rel_path)
-                )
-                return cur.lastrowid
-        finally:
-            conn.close()
-    except Exception as e:
-        app.logger.error(f"DB violation insert error: {e}")
-        return None
 
 
 def _evaluate_uniform_completeness(detections: list[dict], gender: str | None) -> tuple[set[str], set[str]]:
@@ -416,7 +318,7 @@ def _rfid_poll_loop():
                 _rfid_last_uid = uid
                 _rfid_last_time = now
                 _rfid_set_present(True)
-                match_info = _lookup_and_log(uid)
+                match_info = db_manager.lookup_and_log(uid)
                 _publish_event({'type': 'uid', 'uid': uid, 'match': match_info})
         else:
             # No UID read within this poll; mark not present
@@ -442,7 +344,7 @@ def rfid_read_uid():
         uid, err = get_rfid_uid()
         if uid:
             _rfid_set_present(True)
-            match_info = _lookup_and_log(uid)
+            match_info = db_manager.lookup_and_log(uid)
             return jsonify({'success': True, 'uid': uid, 'match': match_info})
         _rfid_set_present(False)
         return jsonify({'success': False, 'error': err or 'Unknown error'}), 500
@@ -456,7 +358,7 @@ def rfid_lookup():
         uid = request.args.get('uid')
         if not uid:
             return jsonify({'success': False, 'error': 'uid query param is required'}), 400
-        student = _find_student_by_rfid(uid)
+        student = db_manager.find_student_by_rfid(uid)
         if student:
             return jsonify({'success': True, 'uid': uid, 'student': student})
         return jsonify({'success': True, 'uid': uid, 'student': None})
@@ -649,7 +551,7 @@ def save_frame():
         try:
             uid = _rfid_last_uid
             if uid:
-                student = _find_student_by_rfid(uid)
+                student = db_manager.find_student_by_rfid(uid)
                 if student:
                     gender = student.get('gender')
         except Exception:
@@ -733,7 +635,7 @@ def save_frame():
             violation_image_url = url_for('static', filename=f'captures/{v_filename}', _external=True)
 
             violation_desc = f"Incomplete uniform for {gender}: missing {', '.join(sorted(missing_items))}"
-            violation_id = _insert_violation(student.get('student_id'), violation_desc, v_rel_path, recorded_by=None)
+            violation_id = db_manager.insert_violation(student.get('student_id'), violation_desc, v_rel_path, recorded_by=None)
             violation_created = violation_id is not None
             if violation_created:
                 _violation_session['created_count'] += 1
@@ -772,7 +674,7 @@ def detect_frame():
         uid = _rfid_last_uid
         if not uid:
             return jsonify({'error': 'No RFID uid captured'}), 403
-        student_check = _find_student_by_rfid(uid)
+        student_check = db_manager.find_student_by_rfid(uid)
         if not student_check:
             return jsonify({'error': 'RFID is not registered to any student'}), 403
 
@@ -808,7 +710,7 @@ def detect_frame():
         try:
             uid = _rfid_last_uid
             if uid:
-                student = _find_student_by_rfid(uid)
+                student = db_manager.find_student_by_rfid(uid)
                 if student:
                     gender = student.get('gender')
         except Exception:
