@@ -9,7 +9,18 @@
 </head>
 <body>
     <nav class="navbar">
-        <h1><i class="fas fa-camera"></i> YOLOv8 Object Detection Dashboard</h1>
+        <div class="nav-left">
+            <h1><i class="fas fa-camera"></i> DRESS System Dashboard</h1>
+        </div>
+        <div class="nav-right">
+            <div class="admin-info">
+                <span class="admin-name">{{ session.admin_name }}</span>
+                <span class="admin-role">{{ session.admin_role }}</span>
+            </div>
+            <a href="/logout" class="logout-btn">
+                <i class="fas fa-sign-out-alt"></i> Logout
+            </a>
+        </div>
     </nav>
 
     <div class="container">

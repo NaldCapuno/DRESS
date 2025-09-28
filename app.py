@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, url_for, Response
+from flask import Flask, render_template, request, jsonify, url_for, Response, session, redirect
 import os
 from werkzeug.utils import secure_filename
 import cv2
@@ -14,9 +14,12 @@ import time
 import threading
 import queue
 import pymysql
+from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
 
 # ------------------ Flask App Setup ------------------
 app = Flask(__name__)
+app.secret_key = os.getenv('SECRET_KEY', 'your-secret-key-change-this-in-production')
 
 # ------------------ Configuration ------------------
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -143,6 +146,77 @@ def _get_db_connection():
         cursorclass=pymysql.cursors.DictCursor,
         autocommit=True
     )
+
+# ------------------ Authentication Functions ------------------
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'admin_id' not in session:
+            return redirect('/login')
+        return f(*args, **kwargs)
+    return decorated_function
+
+def _find_admin_by_email(email):
+    """Find admin by email address"""
+    try:
+        conn = _get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT admin_id, full_name, email, password_hash, role, created_at, last_login
+                    FROM Admins
+                    WHERE email = %s
+                    LIMIT 1
+                    """,
+                    (email,)
+                )
+                return cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        app.logger.error(f"Admin lookup error: {e}")
+        return None
+
+def _update_last_login(admin_id):
+    """Update last login timestamp for admin"""
+    try:
+        conn = _get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE Admins 
+                    SET last_login = CURRENT_TIMESTAMP 
+                    WHERE admin_id = %s
+                    """,
+                    (admin_id,)
+                )
+        finally:
+            conn.close()
+    except Exception as e:
+        app.logger.error(f"Last login update error: {e}")
+
+def _create_admin(full_name, email, password, role):
+    """Create a new admin user"""
+    try:
+        conn = _get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                password_hash = generate_password_hash(password)
+                cur.execute(
+                    """
+                    INSERT INTO Admins (full_name, email, password_hash, role)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (full_name, email, password_hash, role)
+                )
+                return cur.lastrowid
+        finally:
+            conn.close()
+    except Exception as e:
+        app.logger.error(f"Admin creation error: {e}")
+        return None
 
 def _find_student_by_rfid(rfid_uid: str):
     if not rfid_uid:
@@ -433,6 +507,71 @@ def _ensure_rfid_thread_running():
 # ------------------ Routes ------------------
 @app.route('/')
 def home():
+    if 'admin_id' in session:
+        return redirect('/dashboard')
+    return redirect('/login')
+
+@app.route('/login')
+def login_page():
+    if 'admin_id' in session:
+        return redirect('/dashboard')
+    return render_template('login.html')
+
+@app.route('/login', methods=['POST'])
+def login():
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip()
+        password = data.get('password', '')
+        role = data.get('role', '').strip()
+
+        if not email or not password or not role:
+            return jsonify({'success': False, 'error': 'All fields are required'}), 400
+
+        # Find admin by email
+        admin = _find_admin_by_email(email)
+        if not admin:
+            return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
+
+        # Check password
+        if not check_password_hash(admin['password_hash'], password):
+            return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
+
+        # Check role
+        if admin['role'] != role:
+            return jsonify({'success': False, 'error': f'Access denied. This account is for {admin["role"]} role'}), 403
+
+        # Update last login
+        _update_last_login(admin['admin_id'])
+
+        # Set session
+        session['admin_id'] = admin['admin_id']
+        session['admin_name'] = admin['full_name']
+        session['admin_email'] = admin['email']
+        session['admin_role'] = admin['role']
+
+        return jsonify({
+            'success': True, 
+            'message': 'Login successful',
+            'admin': {
+                'name': admin['full_name'],
+                'email': admin['email'],
+                'role': admin['role']
+            }
+        })
+
+    except Exception as e:
+        app.logger.error(f"Login error: {e}")
+        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/login')
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
     return render_template('dashboard.html')
 
 @app.route('/rfid/read_uid', methods=['GET'])

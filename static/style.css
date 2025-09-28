@@ -10,11 +10,54 @@ body {
     background-color: #2c3e50;
     padding: 1rem 2rem;
     color: white;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
 }
 
-.navbar h1 {
+.nav-left h1 {
     margin: 0;
     font-size: 1.5rem;
+}
+
+.nav-right {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.admin-info {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    font-size: 0.9rem;
+}
+
+.admin-name {
+    font-weight: 600;
+    color: #ecf0f1;
+}
+
+.admin-role {
+    color: #bdc3c7;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+}
+
+.logout-btn {
+    background-color: #e74c3c;
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: 5px;
+    text-decoration: none;
+    font-size: 0.9rem;
+    transition: background-color 0.3s;
+}
+
+.logout-btn:hover {
+    background-color: #c0392b;
+    color: white;
+    text-decoration: none;
 }
 
 .container {
