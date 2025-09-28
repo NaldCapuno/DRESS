@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YOLOv8 Object Detection Dashboard</title>
+    <title>Palawan State University - DRESS System Dashboard</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 <body>
     <nav class="navbar">
-        <h1><i class="fas fa-camera"></i> YOLOv8 Object Detection Dashboard</h1>
+        <h1><i class="fas fa-graduation-cap"></i> Palawan State University - DRESS System</h1>
     </nav>
 
     <div class="container">
@@ -29,7 +29,8 @@
         </div>
 
         <div class="dashboard">
-            <div class="card">
+            <!-- Webcam Feed - Spans 2 columns -->
+            <div class="card webcam-card">
                 <div class="card-header">
                     <h2><i class="fas fa-video"></i> Live Webcam Feed</h2>
                     <button id="toggle-camera" class="btn" style="float: right; margin-top: -30px;">
@@ -43,34 +44,37 @@
                 <div id="live-detections" class="detection-list"></div>
             </div>
 
-            <div class="card">
-                <div class="card-header">
-                    <h2><i class="fas fa-id-card"></i> RFID Scanner</h2>
-                </div>
-                <div class="upload-form">
-                    <div id="rfid-status">
-                        RFID auto-scanning is active. Tap a card to scan.
+            <!-- Right Column - RFID Scanner and Image Upload -->
+            <div class="right-column">
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-id-card"></i> RFID Scanner</h2>
                     </div>
-                    <div>
-                        <div id="rfid-read-output"></div>
+                    <div class="upload-form">
+                        <div id="rfid-status">
+                            RFID auto-scanning is active. Tap a card to scan.
+                        </div>
+                        <div>
+                            <div id="rfid-read-output"></div>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <div class="card">
-                <div class="card-header">
-                    <h2><i class="fas fa-upload"></i> Image Upload</h2>
-                </div>
-                <div class="upload-form">
-                    <form id="upload-form">
-                        <input type="file" id="image-input" accept=".jpg,.jpeg,.png" required>
-                        <button type="submit" class="btn">Detect Objects</button>
-                    </form>
-                </div>
-                <div class="result-container" id="result-container" style="display: none;">
-                    <h3>Detection Results</h3>
-                    <div id="detections-list" class="detection-list"></div>
-                    <img id="result-image" class="result-image">
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-upload"></i> Image Upload</h2>
+                    </div>
+                    <div class="upload-form">
+                        <form id="upload-form">
+                            <input type="file" id="image-input" accept=".jpg,.jpeg,.png" required>
+                            <button type="submit" class="btn">Detect Objects</button>
+                        </form>
+                    </div>
+                    <div class="result-container" id="result-container" style="display: none;">
+                        <h3>Detection Results</h3>
+                        <div id="detections-list" class="detection-list"></div>
+                        <img id="result-image" class="result-image">
+                    </div>
                 </div>
             </div>
         </div>
