@@ -48,7 +48,6 @@
                     <h2><i class="fas fa-id-card"></i> RFID Scanner</h2>
                 </div>
                 <div class="upload-form">
-                    <button id="rfid-scan" class="btn"><i class="fas fa-rss"></i> Scan Tag</button>
                     <div id="rfid-status">
                         RFID auto-scanning is active. Tap a card to scan.
                     </div>
@@ -369,7 +368,6 @@
         webcamManager.startCamera();
 
         // RFID scan handling
-        const rfidButton = document.getElementById('rfid-scan');
         const rfidStatus = document.getElementById('rfid-status');
         let rfidES = null;
         let lastCardTime = 0;
@@ -453,37 +451,6 @@
         }
         // Auto-start RFID scanning
         startRfidStream();
-        if (rfidButton && rfidStatus) {
-            rfidButton.addEventListener('click', async () => {
-                try {
-                    rfidButton.disabled = true;
-                    rfidButton.textContent = 'Scanning...';
-                    rfidStatus.textContent = 'Hold a tag on the reader...';
-
-                    const resp = await fetch('/rfid/read_uid', { method: 'GET' });
-                    const data = await resp.json();
-                    if (data.success) {
-                        const m = data.match || {};
-                        if (m.matched) {
-                            rfidStatus.innerHTML = `<span style="color: #0a8; font-weight: 600;">UID:</span> ${data.uid}`;
-                            const out = document.getElementById('rfid-read-output');
-                            if (out) out.textContent = m.name ? `Student: ${m.name} (ID: ${m.student_id})` : `student_id: ${m.student_id}`;
-                        } else {
-                            rfidStatus.innerHTML = `<span style="color: #c33; font-weight: 600;">UID:</span> ${data.uid}`;
-                            const out = document.getElementById('rfid-read-output');
-                            if (out) out.textContent = 'No existing record';
-                        }
-                    } else {
-                        rfidStatus.innerHTML = `<span style="color: #c33;">Error:</span> ${data.error || 'Scan failed'}`;
-                    }
-                } catch (e) {
-                    rfidStatus.innerHTML = `<span style="color: #c33;">Error:</span> ${(e && e.message) || e}`;
-                } finally {
-                    rfidButton.disabled = false;
-                    rfidButton.innerHTML = '<i class="fas fa-rss"></i> Scan Tag';
-                }
-            });
-        }
 
         // Output element for auto-read results
         const readOutput = document.getElementById('rfid-read-output');
