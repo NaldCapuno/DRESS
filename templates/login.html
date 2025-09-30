@@ -78,9 +78,16 @@
                         </div>
                     `;
                     
-                    // Redirect to dashboard after a short delay
+                    // Redirect based on role after a short delay
                     setTimeout(() => {
-                        window.location.href = '/dashboard';
+                        const role = (data.admin && data.admin.role || '').toLowerCase();
+                        if (role === 'security') {
+                            window.location.href = '/dashboard';
+                        } else if (role === 'osas') {
+                            window.location.href = '/osas';
+                        } else {
+                            window.location.href = '/';
+                        }
                     }, 1500);
                 } else {
                     // Show error message

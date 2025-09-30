@@ -380,6 +380,84 @@ def dashboard():
         return jsonify({'success': False, 'error': 'Forbidden: security role required'}), 403
     return render_template('dashboard.html')
 
+# ------------------ OSAS Dashboard ------------------
+def _require_role(role_required: str):
+    admin = session.get('admin')
+    if not admin:
+        return None, (redirect(url_for('login')))
+    if (admin.get('role') or '').lower() != role_required.lower():
+        return None, (jsonify({'success': False, 'error': 'Forbidden'}), 403)
+    return admin, None
+
+@app.route('/osas')
+def osas_dashboard():
+    admin, err = _require_role('osas')
+    if err:
+        return err
+    return render_template('osas_dashboard.html')
+
+@app.route('/osas/violations', methods=['GET'])
+def osas_violations():
+    admin, err = _require_role('osas')
+    if err:
+        return err
+    # Filters
+    start_dt = request.args.get('start')
+    end_dt = request.args.get('end')
+    ay = request.args.get('academic_year')
+    sem = request.args.get('semester')
+    page = int(request.args.get('page', '1'))
+    page_size = int(request.args.get('page_size', '50'))
+    offset = (max(page, 1) - 1) * page_size
+    data = db_manager.get_violations(start_dt=start_dt, end_dt=end_dt, academic_year=ay, semester=sem, limit=page_size, offset=offset)
+    return jsonify({'success': True, **data})
+
+@app.route('/osas/analytics', methods=['GET'])
+def osas_analytics():
+    admin, err = _require_role('osas')
+    if err:
+        return err
+    start_dt = request.args.get('start')
+    end_dt = request.args.get('end')
+    ay = request.args.get('academic_year')
+    sem = request.args.get('semester')
+    data = db_manager.get_violations_analytics(start_dt=start_dt, end_dt=end_dt, academic_year=ay, semester=sem)
+    return jsonify({'success': True, **data})
+
+@app.route('/osas/trend', methods=['GET'])
+def osas_trend():
+    admin, err = _require_role('osas')
+    if err:
+        return err
+    start_dt = request.args.get('start')
+    end_dt = request.args.get('end')
+    ay = request.args.get('academic_year')
+    sem = request.args.get('semester')
+    group_by = request.args.get('group_by', 'day')
+    data = db_manager.get_violations_trend(start_dt=start_dt, end_dt=end_dt, academic_year=ay, semester=sem, group_by=group_by)
+    return jsonify({'success': True, **data})
+
+@app.route('/osas/violation/<int:violation_id>/status', methods=['POST'])
+def osas_update_status(violation_id: int):
+    admin, err = _require_role('osas')
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    status = (body.get('status') or '').strip().lower()
+    # Map requested workflow names to DB statuses
+    # Forwarded to Dean / Guidance are both represented as 'forwarded'
+    status_map = {
+        'forwarded_to_dean': 'forwarded',
+        'forwarded_to_guidance': 'forwarded',
+        'resolved': 'resolved',
+        'pending': 'pending'
+    }
+    mapped = status_map.get(status, status)
+    ok = db_manager.update_violation_status(violation_id, mapped)
+    if not ok:
+        return jsonify({'success': False, 'error': 'Invalid status or update failed'}), 400
+    return jsonify({'success': True})
+
 @app.route('/logout', methods=['POST'])
 def logout():
     session.pop('admin', None)
