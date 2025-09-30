@@ -65,6 +65,14 @@
         const detectionsDiv = document.getElementById('detections');
         const captureBtn = document.getElementById('capture-btn');
         let currentDetections = [];
+        let detectionInFlight = false;
+        let lastDetectTs = 0;
+        const DETECT_EVERY_MS = 250; // ~4 FPS server detection
+        // Downscaled offscreen canvas for detection to reduce payload/CPU
+        const detCanvas = document.createElement('canvas');
+        const detCtx = detCanvas.getContext('2d');
+        let scaleX = 1;
+        let scaleY = 1;
         
         async function captureFrame() {
             // Get the current frame from canvas
@@ -108,6 +116,13 @@
                 video.addEventListener('loadedmetadata', () => {
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
+                    // Choose a smaller width for server-side detection (keep aspect)
+                    const targetDetWidth = Math.min(416, video.videoWidth);
+                    const aspect = video.videoHeight / video.videoWidth;
+                    detCanvas.width = targetDetWidth;
+                    detCanvas.height = Math.round(targetDetWidth * aspect);
+                    scaleX = canvas.width / detCanvas.width;
+                    scaleY = canvas.height / detCanvas.height;
                 });
                 
                 // Start detection loop
@@ -120,78 +135,82 @@
 
         async function detectFrame() {
             if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                // Draw video frame to canvas
+                // Always draw live video at display FPS
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                
-                // Get frame data as blob
-                canvas.toBlob(async (blob) => {
-                    // Create form data with the frame
-                    const formData = new FormData();
-                    formData.append('file', blob, 'frame.jpg');
-                    
-                    try {
-                        // Send frame to backend for detection
-                        const response = await fetch('/detect_frame', {
-                            method: 'POST',
-                            body: formData
-                        });
-                        
-                        const data = await response.json();
-                        
-                        // Update current detections
-                        currentDetections = data.detections;
-                        
-                        // Display all detections
-                        let detectionsHtml = '<h3>Detections:</h3><ul>';
-                        data.detections.forEach(det => {
-                            detectionsHtml += `<li>Class: ${det.class} - Confidence: ${(det.confidence * 100).toFixed(2)}%</li>`;
-                        });
-                        detectionsHtml += '</ul>';
-                        detectionsDiv.innerHTML = detectionsHtml;
-                        
-                        // Draw the video frame
-                        ctx.clearRect(0, 0, canvas.width, canvas.height);
-                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                        // Draw bounding boxes and labels
-                        const fontSize = Math.max(12, Math.round(canvas.height * 0.025));
-                        ctx.font = `${fontSize}px Arial`;
-                        ctx.lineWidth = Math.max(2, Math.round(canvas.height * 0.004));
-                        data.detections.forEach(det => {
-                            const [x1, y1, x2, y2] = det.bbox.map(v => Math.round(v));
-                            const label = `${det.class} ${(det.confidence * 100).toFixed(1)}%`;
+                // Draw last known detections (scaled to display canvas)
+                const fontSize = Math.max(12, Math.round(canvas.height * 0.025));
+                ctx.font = `${fontSize}px Arial`;
+                ctx.lineWidth = Math.max(2, Math.round(canvas.height * 0.004));
+                currentDetections.forEach(det => {
+                    const [dx1, dy1, dx2, dy2] = det.bbox;
+                    const x1 = Math.round(dx1 * scaleX);
+                    const y1 = Math.round(dy1 * scaleY);
+                    const x2 = Math.round(dx2 * scaleX);
+                    const y2 = Math.round(dy2 * scaleY);
+                    const label = `${det.class} ${(det.confidence * 100).toFixed(1)}%`;
+                    ctx.strokeStyle = 'rgba(0, 255, 0, 1)';
+                    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+                    const textMetrics = ctx.measureText(label);
+                    const textWidth = textMetrics.width + 10;
+                    const textHeight = fontSize + 6;
+                    ctx.fillStyle = 'rgba(0, 255, 0, 0.8)';
+                    ctx.fillRect(x1, Math.max(0, y1 - textHeight), textWidth, textHeight);
+                    ctx.fillStyle = '#000000';
+                    ctx.fillText(label, x1 + 5, Math.max(fontSize, y1 - 6));
+                });
 
-                            // Box
-                            ctx.strokeStyle = 'rgba(0, 255, 0, 1)';
-                            ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+                // Throttle detection requests and downscale
+                const now = performance.now();
+                if (!detectionInFlight && now - lastDetectTs >= DETECT_EVERY_MS) {
+                    detectionInFlight = true;
+                    lastDetectTs = now;
+                    detCtx.drawImage(video, 0, 0, detCanvas.width, detCanvas.height);
+                    detCanvas.toBlob(async (blob) => {
+                        try {
+                            const formData = new FormData();
+                            formData.append('file', blob, 'frame.jpg');
+                            const response = await fetch('/detect_frame', { method: 'POST', body: formData });
+                            const data = await response.json();
+                            // Keep detections in detCanvas coordinates
+                            currentDetections = Array.isArray(data.detections) ? data.detections : [];
+                            let detectionsHtml = '<h3>Detections:</h3><ul>';
+                            currentDetections.forEach(det => {
+                                detectionsHtml += `<li>Class: ${det.class} - Confidence: ${(det.confidence * 100).toFixed(2)}%</li>`;
+                            });
+                            detectionsHtml += '</ul>';
+                            detectionsDiv.innerHTML = detectionsHtml;
+                        } catch (err) {
+                            // ignore transient errors
+                        } finally {
+                            detectionInFlight = false;
+                        }
+                    }, 'image/jpeg', 0.7);
+                }
 
-                            // Label background
-                            const textMetrics = ctx.measureText(label);
-                            const textWidth = textMetrics.width + 10;
-                            const textHeight = fontSize + 6;
-                            ctx.fillStyle = 'rgba(0, 255, 0, 0.8)';
-                            ctx.fillRect(x1, Math.max(0, y1 - textHeight), textWidth, textHeight);
-
-                            // Label text
-                            ctx.fillStyle = '#000000';
-                            ctx.fillText(label, x1 + 5, Math.max(fontSize, y1 - 6));
-                        });
-
-                        // Show canvas and hide video
-                        video.style.display = 'none';
-                        canvas.style.display = 'block';
-                    } catch (error) {
-                        console.error('Error during detection:', error);
-                    }
-                }, 'image/jpeg', 0.8);
+                // Show canvas and hide video for overlay
+                video.style.display = 'none';
+                canvas.style.display = 'block';
             }
-            
-            // Request next frame
             requestAnimationFrame(detectFrame);
         }
 
         // Add capture button event listener
-        captureBtn.addEventListener('click', captureFrame);
+        captureBtn.addEventListener('click', () => {
+            // Scale detections to display canvas before sending to server
+            const scaledDetections = currentDetections.map(det => {
+                const [dx1, dy1, dx2, dy2] = det.bbox;
+                return {
+                    ...det,
+                    bbox: [dx1 * scaleX, dy1 * scaleY, dx2 * scaleX, dy2 * scaleY]
+                };
+            });
+            // Replace with scaled versions for this capture call
+            const prev = currentDetections;
+            currentDetections = scaledDetections;
+            captureFrame().finally(() => { currentDetections = prev; });
+        });
 
         // Start webcam when page loads
         setupWebcam();
