@@ -3,95 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YOLOv8 Object Detection</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        .upload-form {
-            border: 2px dashed #ccc;
-            padding: 20px;
-            text-align: center;
-            margin-bottom: 20px;
-        }
-        .result-container {
-            margin-top: 20px;
-        }
-        .result-image {
-            max-width: 100%;
-            margin-top: 20px;
-        }
-        .detection-list {
-            margin-top: 20px;
-        }
-    </style>
+    <title>DRESS System - Redirecting</title>
+    <meta http-equiv="refresh" content="0; url=/login">
 </head>
 <body>
-    <h1>YOLOv8 Object Detection</h1>
-    
-    <div class="upload-form">
-        <h2>Upload an Image</h2>
-        <form id="upload-form">
-            <input type="file" id="image-input" accept=".jpg,.jpeg,.png" required>
-            <button type="submit">Detect Objects</button>
-        </form>
-    </div>
-
-    <div class="result-container" id="result-container" style="display: none;">
-        <h2>Detection Results</h2>
-        <div id="detections-list"></div>
-        <img id="result-image" class="result-image">
-    </div>
-
     <script>
-        document.getElementById('upload-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            const fileInput = document.getElementById('image-input');
-            const file = fileInput.files[0];
-            if (!file) return;
-
-            const formData = new FormData();
-            formData.append('file', file);
-
-            try {
-                const response = await fetch('/predict', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                const data = await response.json();
-                
-                if (data.error) {
-                    alert(data.error);
-                    return;
-                }
-
-                // Display results
-                const resultContainer = document.getElementById('result-container');
-                const detectionsDiv = document.getElementById('detections-list');
-                const resultImage = document.getElementById('result-image');
-
-                // Show detections
-                let detectionsHtml = '<ul>';
-                data.detections.forEach(det => {
-                    detectionsHtml += `<li>Class: ${det.class} - Confidence: ${(det.confidence * 100).toFixed(2)}%</li>`;
-                });
-                detectionsHtml += '</ul>';
-                detectionsDiv.innerHTML = detectionsHtml;
-
-                // Show image
-                resultImage.src = `/static/${data.image_path}`;
-                resultContainer.style.display = 'block';
-
-            } catch (error) {
-                console.error('Error:', error);
-                alert('An error occurred while processing the image');
-            }
-        });
+        // Immediate redirect to login page
+        window.location.href = '/login';
     </script>
+    <p>Redirecting to login page...</p>
 </body>
 </html>

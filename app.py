@@ -335,6 +335,42 @@ def _ensure_rfid_thread_running():
 # ------------------ Routes ------------------
 @app.route('/')
 def home():
+    return render_template('index.html')
+
+@app.route('/login')
+def login():
+    return render_template('login.html')
+
+@app.route('/login', methods=['POST'])
+def login_post():
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+        role = data.get('role')
+        
+        # Simple authentication - you can enhance this with proper database checks
+        # For now, using basic validation
+        if email and password and role:
+            # Here you would typically check against a database
+            # For demo purposes, accepting any valid email/password/role combination
+            return jsonify({
+                'success': True,
+                'message': 'Login successful'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Please fill in all fields'
+            })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': 'Login failed. Please try again.'
+        })
+
+@app.route('/dashboard')
+def dashboard():
     return render_template('dashboard.html')
 
 @app.route('/rfid/read_uid', methods=['GET'])

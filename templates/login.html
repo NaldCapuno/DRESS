@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Login - DRESS System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="login-body">
+    <div class="login-container">
+        <div class="login-header">
+            <h1>Admin Login</h1>
+            <p>DRESS System Access</p>
+        </div>
+
+        <div id="message-container"></div>
+
+        <form id="login-form">
+            <div class="form-group">
+                <label for="email">Email Address</label>
+                <input type="email" id="email" name="email" required>
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+
+            <div class="role-selector">
+                <label for="role">Role</label>
+                <select id="role" name="role" required>
+                    <option value="">Select Role</option>
+                    <option value="Security">Security</option>
+                    <option value="OSAS">OSAS</option>
+                    <option value="Dean">Dean</option>
+                    <option value="Guidance">Guidance</option>
+                </select>
+            </div>
+
+            <button type="submit" class="login-btn" id="login-btn">
+                Login
+            </button>
+        </form>
+
+        <div class="loading" id="loading">
+            <p>Authenticating...</p>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const role = document.getElementById('role').value;
+            const loginBtn = document.getElementById('login-btn');
+            const loading = document.getElementById('loading');
+            const messageContainer = document.getElementById('message-container');
+
+            // Clear previous messages
+            messageContainer.innerHTML = '';
+
+            // Show loading state
+            loginBtn.style.display = 'none';
+            loading.classList.add('show');
+
+            try {
+                const response = await fetch('/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        email: email,
+                        password: password,
+                        role: role
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    // Show success message
+                    messageContainer.innerHTML = `
+                        <div class="success-message">
+                            Login successful! Redirecting to dashboard...
+                        </div>
+                    `;
+                    
+                    // Redirect to dashboard after a short delay
+                    setTimeout(() => {
+                        window.location.href = '/dashboard';
+                    }, 1500);
+                } else {
+                    // Show error message
+                    messageContainer.innerHTML = `
+                        <div class="error-message">
+                            ${data.error || 'Login failed. Please check your credentials.'}
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                messageContainer.innerHTML = `
+                    <div class="error-message">
+                        Network error. Please try again.
+                    </div>
+                `;
+            } finally {
+                // Hide loading state
+                loginBtn.style.display = 'block';
+                loading.classList.remove('show');
+            }
+        });
+    </script>
+</body>
+</html>
