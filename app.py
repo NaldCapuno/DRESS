@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, url_for, Response
+from flask import Flask, render_template, request, jsonify, url_for, Response, session, redirect
 import os
 from werkzeug.utils import secure_filename
 import cv2
@@ -24,6 +24,9 @@ app.config['CAPTURE_FOLDER'] = 'static/captures'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['CONF_THRESHOLD'] = 0.5  # Lowered from 0.85 for debugging
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+
+# Session secret key
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-insecure-change-me')
 
 # Required attire per gender
 REQUIRED_UNIFORM_BY_GENDER = {
@@ -344,34 +347,121 @@ def login():
 @app.route('/login', methods=['POST'])
 def login_post():
     try:
-        data = request.get_json()
-        email = data.get('email')
-        password = data.get('password')
-        role = data.get('role')
-        
-        # Simple authentication - you can enhance this with proper database checks
-        # For now, using basic validation
-        if email and password and role:
-            # Here you would typically check against a database
-            # For demo purposes, accepting any valid email/password/role combination
-            return jsonify({
-                'success': True,
-                'message': 'Login successful'
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Please fill in all fields'
-            })
+        data = request.get_json(silent=True) or {}
+        # Support both keys for backward compatibility
+        username = (data.get('username') or data.get('email') or '').strip()
+        password = (data.get('password') or '').strip()
+
+        if not username or not password:
+            return jsonify({'success': False, 'error': 'Please fill in all fields'}), 400
+
+        admin = db_manager.verify_admin_credentials(username, password)
+        if not admin:
+            return jsonify({'success': False, 'error': 'Invalid username or password'}), 401
+
+        # Store minimal admin info in session
+        session['admin'] = {
+            'admin_id': admin.get('admin_id'),
+            'username': admin.get('username'),
+            'role': (admin.get('role') or '').lower()
+        }
+
+        return jsonify({'success': True, 'message': 'Login successful', 'admin': session['admin']})
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': 'Login failed. Please try again.'
-        })
+        app.logger.error(f"Login error: {e}")
+        return jsonify({'success': False, 'error': 'Login failed. Please try again.'}), 500
 
 @app.route('/dashboard')
 def dashboard():
+    admin = session.get('admin')
+    if not admin:
+        return redirect(url_for('login'))
+    if (admin.get('role') or '').lower() != 'security':
+        return jsonify({'success': False, 'error': 'Forbidden: security role required'}), 403
     return render_template('dashboard.html')
+
+# ------------------ OSAS Dashboard ------------------
+def _require_role(role_required: str):
+    admin = session.get('admin')
+    if not admin:
+        return None, (redirect(url_for('login')))
+    if (admin.get('role') or '').lower() != role_required.lower():
+        return None, (jsonify({'success': False, 'error': 'Forbidden'}), 403)
+    return admin, None
+
+@app.route('/osas')
+def osas_dashboard():
+    admin, err = _require_role('osas')
+    if err:
+        return err
+    return render_template('osas_dashboard.html')
+
+@app.route('/osas/violations', methods=['GET'])
+def osas_violations():
+    admin, err = _require_role('osas')
+    if err:
+        return err
+    # Filters
+    start_dt = request.args.get('start')
+    end_dt = request.args.get('end')
+    ay = request.args.get('academic_year')
+    sem = request.args.get('semester')
+    page = int(request.args.get('page', '1'))
+    page_size = int(request.args.get('page_size', '50'))
+    offset = (max(page, 1) - 1) * page_size
+    data = db_manager.get_violations(start_dt=start_dt, end_dt=end_dt, academic_year=ay, semester=sem, limit=page_size, offset=offset)
+    return jsonify({'success': True, **data})
+
+@app.route('/osas/analytics', methods=['GET'])
+def osas_analytics():
+    admin, err = _require_role('osas')
+    if err:
+        return err
+    start_dt = request.args.get('start')
+    end_dt = request.args.get('end')
+    ay = request.args.get('academic_year')
+    sem = request.args.get('semester')
+    data = db_manager.get_violations_analytics(start_dt=start_dt, end_dt=end_dt, academic_year=ay, semester=sem)
+    return jsonify({'success': True, **data})
+
+@app.route('/osas/trend', methods=['GET'])
+def osas_trend():
+    admin, err = _require_role('osas')
+    if err:
+        return err
+    start_dt = request.args.get('start')
+    end_dt = request.args.get('end')
+    ay = request.args.get('academic_year')
+    sem = request.args.get('semester')
+    group_by = request.args.get('group_by', 'day')
+    data = db_manager.get_violations_trend(start_dt=start_dt, end_dt=end_dt, academic_year=ay, semester=sem, group_by=group_by)
+    return jsonify({'success': True, **data})
+
+@app.route('/osas/violation/<int:violation_id>/status', methods=['POST'])
+def osas_update_status(violation_id: int):
+    admin, err = _require_role('osas')
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    status = (body.get('status') or '').strip().lower()
+    # Map requested workflow names to DB statuses
+    # Forwarded to Dean / Guidance are both represented as 'forwarded'
+    status_map = {
+        'forwarded_to_dean': 'forwarded',
+        'forwarded_to_guidance': 'forwarded',
+        'resolved': 'resolved',
+        'pending': 'pending'
+    }
+    mapped = status_map.get(status, status)
+    ok = db_manager.update_violation_status(violation_id, mapped)
+    if not ok:
+        return jsonify({'success': False, 'error': 'Invalid status or update failed'}), 400
+    return jsonify({'success': True})
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.pop('admin', None)
+    return jsonify({'success': True, 'message': 'Logged out'})
 
 @app.route('/rfid/read_uid', methods=['GET'])
 def rfid_read_uid():

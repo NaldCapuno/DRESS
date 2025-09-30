@@ -7,18 +7,21 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body class="login-body">
-    <div class="login-container">
+    <div class="login-container floating-card">
+        <div class="login-illustration">
+            <img src="{{ url_for('static', filename='images/login_logo.png') }}" alt="Login Illustration" />
+        </div>
         <div class="login-header">
             <h1>Admin Login</h1>
-            <p>DRESS System Access</p>
+            <p>Enter valid username & password to continue</p>
         </div>
 
         <div id="message-container"></div>
 
-        <form id="login-form">
+        <form id="login-form" class="login-form">
             <div class="form-group">
-                <label for="email">Email Address</label>
-                <input type="email" id="email" name="email" required>
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required>
             </div>
 
             <div class="form-group">
@@ -26,21 +29,11 @@
                 <input type="password" id="password" name="password" required>
             </div>
 
-            <div class="role-selector">
-                <label for="role">Role</label>
-                <select id="role" name="role" required>
-                    <option value="">Select Role</option>
-                    <option value="Security">Security</option>
-                    <option value="OSAS">OSAS</option>
-                    <option value="Dean">Dean</option>
-                    <option value="Guidance">Guidance</option>
-                </select>
-            </div>
-
             <button type="submit" class="login-btn" id="login-btn">
                 Login
             </button>
         </form>
+
 
         <div class="loading" id="loading">
             <p>Authenticating...</p>
@@ -51,9 +44,9 @@
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            const email = document.getElementById('email').value;
+            const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
-            const role = document.getElementById('role').value;
+            
             const loginBtn = document.getElementById('login-btn');
             const loading = document.getElementById('loading');
             const messageContainer = document.getElementById('message-container');
@@ -72,9 +65,8 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        email: email,
-                        password: password,
-                        role: role
+                        username: username,
+                        password: password
                     })
                 });
 
@@ -88,9 +80,16 @@
                         </div>
                     `;
                     
-                    // Redirect to dashboard after a short delay
+                    // Redirect based on role after a short delay
                     setTimeout(() => {
-                        window.location.href = '/dashboard';
+                        const role = (data.admin && data.admin.role || '').toLowerCase();
+                        if (role === 'security') {
+                            window.location.href = '/dashboard';
+                        } else if (role === 'osas') {
+                            window.location.href = '/osas';
+                        } else {
+                            window.location.href = '/';
+                        }
                     }, 1500);
                 } else {
                     // Show error message

@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSAS Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        async function fetchJSON(url) {
+            const res = await fetch(url);
+            return await res.json();
+        }
+        async function postJSON(url, body) {
+            const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            return await res.json();
+        }
+        let page = 1;
+        let pageSize = 50;
+
+        async function loadAnalytics() {
+            const params = new URLSearchParams(getFilterParams());
+            const data = await fetchJSON(`/osas/analytics?${params.toString()}`);
+            if (!data.success) return;
+            document.getElementById('total-violations').textContent = data.total;
+            renderBarChart('byCollegeChart', data.by_college);
+            renderBarChart('byProgramChart', data.by_program);
+            renderPieChart('byGenderChart', data.by_gender);
+            renderPieChart('byStatusChart', data.by_status);
+        }
+        async function loadViolations() {
+            const params = new URLSearchParams(getFilterParams());
+            params.set('page', page);
+            params.set('page_size', pageSize);
+            const data = await fetchJSON(`/osas/violations?${params.toString()}`);
+            if (!data.success) return;
+            const tbody = document.getElementById('violations-body');
+            tbody.innerHTML = '';
+            data.rows.forEach(v => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${v.violation_id}</td>
+                    <td>${v.timestamp || ''}</td>
+                    <td>${v.student_id || ''}</td>
+                    <td>${v.name || ''}</td>
+                    <td>${v.college || ''}</td>
+                    <td>${v.course || ''}</td>
+                    <td>${v.gender || ''}</td>
+                    <td>${v.violation_type || ''}</td>
+                    <td><span class="status ${v.status}">${v.status}</span></td>
+                    <td>
+                        <select onchange="updateStatus(${v.violation_id}, this.value)">
+                            <option value="">Update...</option>
+                            <option value="forwarded_to_dean">Forward to Dean</option>
+                            <option value="forwarded_to_guidance">Forward to Guidance</option>
+                            <option value="resolved">Resolved</option>
+                            <option value="pending">Pending</option>
+                        </select>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+            document.getElementById('total-count').textContent = data.total;
+            document.getElementById('page').textContent = page;
+        }
+        async function updateStatus(id, val) {
+            if (!val) return;
+            const res = await postJSON(`/osas/violation/${id}/status`, { status: val });
+            if (res.success) {
+                loadViolations();
+                loadAnalytics();
+            } else {
+                alert(res.error || 'Failed to update');
+            }
+        }
+        function getFilterParams() {
+            return {
+                start: document.getElementById('start').value,
+                end: document.getElementById('end').value,
+                academic_year: document.getElementById('academic_year').value,
+                semester: document.getElementById('semester').value,
+            };
+        }
+        function applyFilters() { page = 1; loadViolations(); loadAnalytics(); }
+        function prevPage() { if (page > 1) { page--; loadViolations(); } }
+        function nextPage() { page++; loadViolations(); }
+
+        let charts = {};
+        function renderBarChart(id, rows) {
+            const ctx = document.getElementById(id).getContext('2d');
+            const labels = rows.map(r => r.label);
+            const data = rows.map(r => r.cnt);
+            charts[id]?.destroy?.();
+            charts[id] = new Chart(ctx, { type: 'bar', data: { labels, datasets: [{ label: 'Count', data, backgroundColor: '#4CAF50' }] }, options: { responsive: true, plugins: { legend: { display: false } } } });
+        }
+        function renderPieChart(id, rows) {
+            const ctx = document.getElementById(id).getContext('2d');
+            const labels = rows.map(r => r.label);
+            const data = rows.map(r => r.cnt);
+            charts[id]?.destroy?.();
+            charts[id] = new Chart(ctx, { type: 'pie', data: { labels, datasets: [{ data, backgroundColor: ['#4CAF50','#FF9800','#03A9F4','#E91E63','#9C27B0','#795548'] }] }, options: { responsive: true } });
+        }
+        window.addEventListener('DOMContentLoaded', () => { loadViolations(); loadAnalytics(); });
+    </script>
+</head>
+<body>
+    <div class="dashboard-shell">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="brand">OSAS</div>
+            </div>
+            <nav class="sidebar-nav">
+                <button class="nav-item active" data-target="overview-section">Overview</button>
+                <button class="nav-item" data-target="statistics-section">Statistics</button>
+                <button class="nav-item" data-target="violations-section">Violations</button>
+            </nav>
+            <div class="sidebar-footer">
+                <button class="nav-item muted" id="logout-btn-side">Logout</button>
+            </div>
+        </aside>
+
+        <main class="main">
+        <div class="container">
+        <div id="overview-section">
+
+    <div class="metrics-grid" style="margin-top: 16px;">
+        <div class="card">
+            <div class="metric">
+                <div class="metric-label">Total Violations (This Term)</div>
+                <div class="metric-value" id="ov-total">0</div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="metric">
+                <div class="metric-label">Unresolved</div>
+                <div class="metric-value" id="ov-unresolved">0</div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="metric">
+                <div class="metric-label">Resolved</div>
+                <div class="metric-value" id="ov-resolved">0</div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="metric">
+                <div class="metric-label">Pending > 3 Days</div>
+                <div class="metric-value" id="ov-pending-3d">0</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="grid" style="margin-top: 16px;">
+        <div class="card">
+            <h3>Violations Over Time</h3>
+            <canvas id="ov-trend" height="160"></canvas>
+        </div>
+        <div class="card">
+            <h3>Resolved vs Unresolved</h3>
+            <canvas id="ov-resolve-pie" height="160"></canvas>
+        </div>
+    </div>
+
+    <div class="grid" style="margin-top: 16px;">
+        <div class="card">
+            <h3>Top College</h3>
+            <div id="ov-top-college" class="metric-value" style="font-size:1.2rem;">-</div>
+        </div>
+        <div class="card">
+            <h3>Top Programs</h3>
+            <ul id="ov-top-programs" style="margin:0; padding-left:18px;"></ul>
+        </div>
+        <div class="card">
+            <h3>Gender Distribution</h3>
+            <canvas id="ov-gender" height="140"></canvas>
+        </div>
+    </div>
+    </div>
+
+    <div id="statistics-section" style="display:none;">
+        <div class="metrics-grid" style="margin-top: 16px;">
+            <div class="card">
+                <h3>By Status</h3>
+                <canvas id="byStatusChart" height="160"></canvas>
+            </div>
+            <div class="card">
+                <h3>By College</h3>
+                <canvas id="byCollegeChart" height="160"></canvas>
+            </div>
+            <div class="card">
+                <h3>By Program</h3>
+                <canvas id="byProgramChart" height="160"></canvas>
+            </div>
+            <div class="card">
+                <h3>By Gender</h3>
+                <canvas id="byGenderChart" height="160"></canvas>
+            </div>
+        </div>
+    </div>
+    
+    <div id="violations-section" style="display:none;">
+    <div class="card">
+        <div class="filters">
+            <input type="date" id="start" placeholder="Start date">
+            <input type="date" id="end" placeholder="End date">
+            <input type="text" id="academic_year" placeholder="Academic Year (e.g., 2024-2025)">
+            <select id="semester">
+                <option value="">Semester</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+            </select>
+            <button class="btn" onclick="applyFilters()">Apply</button>
+        </div>
+    </div>
+    <div class="card" style="margin-top: 16px;">
+        <div class="toolbar">
+            <h3>Violation Records</h3>
+            <div class="pagination">
+                <button class="btn" onclick="prevPage()">Prev</button>
+                <span>Page <span id="page">1</span></span>
+                <button class="btn" onclick="nextPage()">Next</button>
+                <span>Total: <span id="total-count">0</span></span>
+            </div>
+        </div>
+        <div class="table-wrap">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Date</th>
+                        <th>Student ID</th>
+                        <th>Name</th>
+                        <th>College</th>
+                        <th>Program</th>
+                        <th>Gender</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="violations-body"></tbody>
+            </table>
+        </div>
+    </div>
+    </div>
+    </div>
+    </main>
+    </div>
+
+    <script>
+        // Sidebar-only navigation
+        document.addEventListener('DOMContentLoaded', () => {
+            const sideButtons = document.querySelectorAll('.sidebar .nav-item');
+            function showSection(target){
+                sideButtons.forEach(b=>b.classList.toggle('active', b.dataset.target===target));
+                document.getElementById('overview-section').style.display = target === 'overview-section' ? '' : 'none';
+                document.getElementById('statistics-section').style.display = target === 'statistics-section' ? '' : 'none';
+                document.getElementById('violations-section').style.display = target === 'violations-section' ? '' : 'none';
+                if (target === 'overview-section') { renderOverview(); }
+                if (target === 'statistics-section') { loadAnalytics(); }
+            }
+            sideButtons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    if (!btn.dataset.target) return;
+                    const target = btn.getAttribute('data-target');
+                    showSection(target);
+                });
+            });
+            const logoutSide = document.getElementById('logout-btn-side');
+            if (logoutSide) {
+                logoutSide.addEventListener('click', async () => {
+                    try { await fetch('/logout', { method: 'POST' }); } catch (e) {}
+                    window.location.href = '/login';
+                });
+            }
+            // Initial render
+            renderOverview();
+        });
+
+        // Overview rendering using analytics data
+        async function renderOverview() {
+            const params = new URLSearchParams(getFilterParams());
+            const data = await fetchJSON(`/osas/analytics?${params.toString()}`);
+            if (!data.success) return;
+            // Key stats
+            const total = data.total || 0;
+            const byStatus = (data.by_status || []).reduce((acc, r) => { acc[String(r.label||'').toLowerCase()] = r.cnt||0; return acc; }, {});
+            const resolved = byStatus['resolved'] || 0;
+            const unresolved = total - resolved;
+            document.getElementById('ov-total').textContent = total;
+            document.getElementById('ov-unresolved').textContent = unresolved;
+            document.getElementById('ov-resolved').textContent = resolved;
+            // Pending > 3 days is approximated from status 'pending' bucket
+            document.getElementById('ov-pending-3d').textContent = byStatus['pending'] || 0;
+
+            // Top breakdown highlights
+            const topCollege = (data.by_college || [])[0];
+            document.getElementById('ov-top-college').textContent = topCollege ? `${topCollege.label} (${topCollege.cnt})` : '-';
+            const topPrograms = (data.by_program || []).slice(0,3);
+            const list = document.getElementById('ov-top-programs');
+            list.innerHTML = '';
+            topPrograms.forEach(p=>{
+                const li = document.createElement('li');
+                li.textContent = `${p.label} (${p.cnt})`;
+                list.appendChild(li);
+            });
+
+            // Small charts on overview (use real trend)
+            const trendGroup = 'day';
+            const trend = await fetchJSON(`/osas/trend?${params.toString()}&group_by=${trendGroup}`);
+            const trendPayload = {
+                labels: (trend.series || []).map(p=>p.label),
+                rows: (trend.series || []).map(p=>p.cnt)
+            };
+            renderLine('ov-trend', trendPayload);
+            renderPieChart('ov-resolve-pie', [
+                { label: 'Resolved', cnt: resolved },
+                { label: 'Unresolved', cnt: Math.max(0, total - resolved) }
+            ]);
+            renderBarChart('ov-gender', data.by_gender || []);
+        }
+
+        // Placeholder trend data (can be wired to a trend endpoint later)
+        function buildTrendDummy(){
+            const days = Array.from({length: 14}, (_,i)=>`D${i+1}`);
+            const vals = days.map(()=> Math.floor(Math.random()*10)+2);
+            return { labels: days, rows: vals };
+        }
+
+        function renderLine(id, trend){
+            const ctx = document.getElementById(id).getContext('2d');
+            charts[id]?.destroy?.();
+            charts[id] = new Chart(ctx, { type: 'line', data: { labels: trend.labels, datasets: [{ label: 'Violations', data: trend.rows, borderColor: '#007FFF', backgroundColor: 'rgba(0,127,255,0.15)', tension: 0.3 }] }, options: { responsive: true, plugins: { legend: { display: false } } } });
+        }
+    </script>
+</body>
+</html>
+
