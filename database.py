@@ -6,7 +6,8 @@ Handles all database connections and operations.
 import os
 import pymysql
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
+from werkzeug.security import check_password_hash
 
 
 class DatabaseConfig:
@@ -39,6 +40,49 @@ class DatabaseManager:
             autocommit=True
         )
     
+    # ------------------ Admin Authentication ------------------
+    def get_admin_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        """Fetch an admin record by username."""
+        if not username:
+            return None
+        try:
+            conn = self.get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT admin_id, username, password_hash, role, created_at
+                        FROM admins
+                        WHERE username = %s
+                        LIMIT 1
+                        """,
+                        (username,)
+                    )
+                    return cur.fetchone()
+            finally:
+                conn.close()
+        except Exception as e:
+            self.logger.error(f"DB admin fetch error: {e}")
+            return None
+
+    def verify_admin_credentials(self, username: str, password: str, required_role: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Verify admin username/password and optional role. Returns admin dict without password on success."""
+        admin = self.get_admin_by_username(username)
+        if not admin:
+            return None
+        try:
+            if not check_password_hash(admin.get('password_hash', ''), password or ''):
+                return None
+            if required_role and str(admin.get('role') or '').lower() != str(required_role or '').lower():
+                return None
+            # Remove sensitive field before returning
+            sanitized = dict(admin)
+            sanitized.pop('password_hash', None)
+            return sanitized
+        except Exception as e:
+            self.logger.error(f"Password check error: {e}")
+            return None
+
     def find_student_by_rfid(self, rfid_uid: str) -> Optional[Dict[str, Any]]:
         """Find a student by their RFID UID."""
         if not rfid_uid:

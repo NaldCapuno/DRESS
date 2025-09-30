@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, url_for, Response
+from flask import Flask, render_template, request, jsonify, url_for, Response, session, redirect
 import os
 from werkzeug.utils import secure_filename
 import cv2
@@ -24,6 +24,9 @@ app.config['CAPTURE_FOLDER'] = 'static/captures'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['CONF_THRESHOLD'] = 0.5  # Lowered from 0.85 for debugging
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+
+# Session secret key
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-insecure-change-me')
 
 # Required attire per gender
 REQUIRED_UNIFORM_BY_GENDER = {
@@ -344,34 +347,43 @@ def login():
 @app.route('/login', methods=['POST'])
 def login_post():
     try:
-        data = request.get_json()
-        email = data.get('email')
-        password = data.get('password')
-        role = data.get('role')
-        
-        # Simple authentication - you can enhance this with proper database checks
-        # For now, using basic validation
-        if email and password and role:
-            # Here you would typically check against a database
-            # For demo purposes, accepting any valid email/password/role combination
-            return jsonify({
-                'success': True,
-                'message': 'Login successful'
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Please fill in all fields'
-            })
+        data = request.get_json(silent=True) or {}
+        # Support both keys for backward compatibility
+        username = (data.get('username') or data.get('email') or '').strip()
+        password = (data.get('password') or '').strip()
+
+        if not username or not password:
+            return jsonify({'success': False, 'error': 'Please fill in all fields'}), 400
+
+        admin = db_manager.verify_admin_credentials(username, password)
+        if not admin:
+            return jsonify({'success': False, 'error': 'Invalid username or password'}), 401
+
+        # Store minimal admin info in session
+        session['admin'] = {
+            'admin_id': admin.get('admin_id'),
+            'username': admin.get('username'),
+            'role': (admin.get('role') or '').lower()
+        }
+
+        return jsonify({'success': True, 'message': 'Login successful', 'admin': session['admin']})
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': 'Login failed. Please try again.'
-        })
+        app.logger.error(f"Login error: {e}")
+        return jsonify({'success': False, 'error': 'Login failed. Please try again.'}), 500
 
 @app.route('/dashboard')
 def dashboard():
+    admin = session.get('admin')
+    if not admin:
+        return redirect(url_for('login'))
+    if (admin.get('role') or '').lower() != 'security':
+        return jsonify({'success': False, 'error': 'Forbidden: security role required'}), 403
     return render_template('dashboard.html')
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.pop('admin', None)
+    return jsonify({'success': True, 'message': 'Logged out'})
 
 @app.route('/rfid/read_uid', methods=['GET'])
 def rfid_read_uid():

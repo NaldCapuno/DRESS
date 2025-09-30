@@ -17,8 +17,8 @@
 
         <form id="login-form">
             <div class="form-group">
-                <label for="email">Email Address</label>
-                <input type="email" id="email" name="email" required>
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required>
             </div>
 
             <div class="form-group">
@@ -26,16 +26,7 @@
                 <input type="password" id="password" name="password" required>
             </div>
 
-            <div class="role-selector">
-                <label for="role">Role</label>
-                <select id="role" name="role" required>
-                    <option value="">Select Role</option>
-                    <option value="Security">Security</option>
-                    <option value="OSAS">OSAS</option>
-                    <option value="Dean">Dean</option>
-                    <option value="Guidance">Guidance</option>
-                </select>
-            </div>
+            
 
             <button type="submit" class="login-btn" id="login-btn">
                 Login
@@ -51,9 +42,9 @@
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            const email = document.getElementById('email').value;
+            const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
-            const role = document.getElementById('role').value;
+            
             const loginBtn = document.getElementById('login-btn');
             const loading = document.getElementById('loading');
             const messageContainer = document.getElementById('message-container');
@@ -72,9 +63,8 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        email: email,
-                        password: password,
-                        role: role
+                        username: username,
+                        password: password
                     })
                 });
 
