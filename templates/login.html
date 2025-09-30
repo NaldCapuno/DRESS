@@ -7,15 +7,18 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body class="login-body">
-    <div class="login-container">
+    <div class="login-container floating-card">
+        <div class="login-illustration">
+            <img src="{{ url_for('static', filename='images/login_logo.png') }}" alt="Login Illustration" />
+        </div>
         <div class="login-header">
             <h1>Admin Login</h1>
-            <p>DRESS System Access</p>
+            <p>Enter valid username & password to continue</p>
         </div>
 
         <div id="message-container"></div>
 
-        <form id="login-form">
+        <form id="login-form" class="login-form">
             <div class="form-group">
                 <label for="username">Username</label>
                 <input type="text" id="username" name="username" required>
@@ -26,12 +29,11 @@
                 <input type="password" id="password" name="password" required>
             </div>
 
-            
-
             <button type="submit" class="login-btn" id="login-btn">
                 Login
             </button>
         </form>
+
 
         <div class="loading" id="loading">
             <p>Authenticating...</p>
