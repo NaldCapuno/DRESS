@@ -411,7 +411,19 @@
                             if (m.matched) {
                                 rfidStatus.textContent = `UID: ${payload.uid}`;
                                 const out = document.getElementById('rfid-read-output');
-                                if (out) out.textContent = m.name ? `Student: ${m.name} (ID: ${m.student_id})` : `student_id: ${m.student_id}`;
+                                if (out) {
+                                    // Display all student information in a structured format
+                                    out.innerHTML = `
+                                        <div class="student-info">
+                                            <div class="info-row"><strong>Student ID:</strong> <span>${m.student_id || 'N/A'}</span></div>
+                                            <div class="info-row"><strong>Name:</strong> <span>${m.name || 'N/A'}</span></div>
+                                            <div class="info-row"><strong>Gender:</strong> <span>${m.gender || 'N/A'}</span></div>
+                                            <div class="info-row"><strong>Year Level:</strong> <span>${m.year_level || 'N/A'}</span></div>
+                                            <div class="info-row"><strong>Course:</strong> <span>${m.course || 'N/A'}</span></div>
+                                            <div class="info-row"><strong>College:</strong> <span>${m.college || 'N/A'}</span></div>
+                                        </div>
+                                    `;
+                                }
                             } else {
                                 rfidStatus.textContent = `UID: ${payload.uid}`;
                                 const out = document.getElementById('rfid-read-output');
