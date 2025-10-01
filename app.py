@@ -130,6 +130,35 @@ def _delete_first_captured_images():
 
 
 
+def _filter_detections_by_gender(detections: list[dict], gender: str | None) -> list[dict]:
+    """Filter detections to only include items relevant to the student's gender."""
+    if not gender:
+        app.logger.info("No gender provided, returning all detections")
+        return detections
+    
+    gender_key = str(gender).strip().lower()
+    required_items = REQUIRED_UNIFORM_BY_GENDER.get(gender_key, set())
+    
+    if not required_items:
+        app.logger.info(f"No required items found for gender {gender_key}, returning all detections")
+        return detections
+    
+    # Filter detections to only include items relevant to this gender
+    filtered_detections = []
+    for detection in detections:
+        class_name = str(detection.get('class', '')).strip().lower()
+        
+        # Include the detection if it's a required item for this gender
+        if class_name in required_items:
+            filtered_detections.append(detection)
+            app.logger.info(f"Including detection: {class_name} (required for {gender_key})")
+        else:
+            app.logger.info(f"Filtering out detection: {class_name} (not required for {gender_key})")
+    
+    app.logger.info(f"Filtered {len(detections)} detections to {len(filtered_detections)} gender-relevant detections")
+    return filtered_detections
+
+
 def _evaluate_uniform_completeness(detections: list[dict], gender: str | None) -> tuple[set[str], set[str]]:
     # returns (present_items, missing_items)
     detected_classes = {str(d.get('class', '')).strip().lower() for d in detections}
@@ -671,7 +700,7 @@ def save_frame():
             return jsonify({'error': 'No frame data received'}), 400
 
         detections = data.get('detections', [])
-        # Evaluate potential violation for this frame
+        # Get student information and filter detections by gender
         gender = None
         student = None
         try:
@@ -682,7 +711,10 @@ def save_frame():
                     gender = student.get('gender')
         except Exception:
             pass
-        present_items, missing_items = _evaluate_uniform_completeness(detections, gender)
+        
+        # Filter detections to only include items relevant to the student's gender
+        filtered_detections = _filter_detections_by_gender(detections, gender)
+        present_items, missing_items = _evaluate_uniform_completeness(filtered_detections, gender)
 
         image_bytes = base64.b64decode(image_data.split(',')[1])
 
@@ -700,8 +732,8 @@ def save_frame():
             is_final_slot = saved_count >= (app.config['CAPTURE_MAX_IMAGES'] - 1)
             return jsonify({'success': True, 'captured': False, 'reason': 'throttled', 'frame_index': frame_index, 'saved_count': saved_count, 'final_slot': is_final_slot})
 
-        # Draw bounding boxes for high-confidence detections
-        for det in detections:
+        # Draw bounding boxes for high-confidence filtered detections
+        for det in filtered_detections:
             conf = float(det['confidence'])
             if conf >= conf_threshold:
                 x1, y1, x2, y2 = map(int, det['bbox'])
@@ -730,7 +762,7 @@ def save_frame():
         violation_image_url = None
         
         # Debug logging
-        app.logger.info(f"Save frame - student: {student is not None}, gender: {gender}, missing_items: {missing_items}, detections: {len(detections)}")
+        app.logger.info(f"Save frame - student: {student is not None}, gender: {gender}, missing_items: {missing_items}, total_detections: {len(detections)}, filtered_detections: {len(filtered_detections)}")
         app.logger.info(f"Session - saved_count: {_capture_session['saved_count']}, violation_created: {_violation_session['created_count']}, uid: {_rfid_last_uid}")
         
         # Ensure violation session is set up for this UID
@@ -743,7 +775,7 @@ def save_frame():
             annotated = img.copy()
             missing_text = "Missing: " + ", ".join(sorted(missing_items))
             cv2.putText(annotated, missing_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3)
-            for det in detections:
+            for det in filtered_detections:
                 conf = float(det['confidence'])
                 if conf >= conf_threshold:
                     x1, y1, x2, y2 = map(int, det['bbox'])
@@ -830,7 +862,7 @@ def detect_frame():
                     'class': class_name
                 })
 
-        # Evaluate uniform completeness based on last scanned RFID
+        # Get student information and filter detections by gender
         student = None
         gender = None
         try:
@@ -842,10 +874,14 @@ def detect_frame():
         except Exception:
             pass
 
-        present_items, missing_items = _evaluate_uniform_completeness(detections, gender)
+        # Filter detections to only include items relevant to the student's gender
+        filtered_detections = _filter_detections_by_gender(detections, gender)
+        
+        # Evaluate uniform completeness based on filtered detections
+        present_items, missing_items = _evaluate_uniform_completeness(filtered_detections, gender)
         
         # Debug logging
-        app.logger.info(f"Detect frame - student: {student is not None}, gender: {gender}, detections: {len(detections)}, present: {present_items}, missing: {missing_items}")
+        app.logger.info(f"Detect frame - student: {student is not None}, gender: {gender}, total_detections: {len(detections)}, filtered_detections: {len(filtered_detections)}, present: {present_items}, missing: {missing_items}")
 
         # Defer violation creation to end-of-capture in save_frame
         violation_created = False
@@ -853,7 +889,7 @@ def detect_frame():
         image_url = None
 
         response = {
-            'detections': detections,
+            'detections': filtered_detections,  # Use filtered detections instead of all detections
             'uniform': {
                 'gender': gender,
                 'present': sorted(list(present_items)) if present_items else [],

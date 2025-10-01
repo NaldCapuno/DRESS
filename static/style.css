@@ -474,6 +474,39 @@ input[type="file"]:focus {
     box-shadow: 0 0 5px rgba(255, 127, 80, 0.3);
 }
 
+/* Student information display styles */
+.student-info {
+    background: #f8f9fa;
+    border: 1px solid #e1e5e9;
+    border-radius: 8px;
+    padding: 15px;
+    margin-top: 10px;
+}
+
+.info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid #e1e5e9;
+}
+
+.info-row:last-child {
+    border-bottom: none;
+}
+
+.info-row strong {
+    color: #007FFF;
+    font-weight: 600;
+    min-width: 100px;
+}
+
+.info-row span {
+    color: #333;
+    text-align: right;
+    flex: 1;
+}
+
 .loading {
     display: none;
     text-align: center;
